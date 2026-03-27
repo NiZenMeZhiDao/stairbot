@@ -71,14 +71,14 @@ class SuspensionController(Node):
     
         # 示例：动作 1 - 接近楼梯，抬起前轮
         # 当距离小于 0.5 米时触发
-        if (self.front_distances[0] < 200.0) & (self.front_distances[1] < 200.0):
+        if (self.front_distances[1] < 200.0) & (self.front_distances[0] < 200.0):
             self.wheel_heights[0] = 230.0  # 左前抬升
             self.wheel_heights[1] = 230.0  # 右前抬升
             self.wheel_heights[2] = 230.0  # 左前抬升
             self.wheel_heights[3] = 230.0  # 右前抬升
             self.high = 1
             # self.get_logger().debug("检测到楼梯，前轮已抬升")
-        if (self.front_distances[0] < 200.0) & (self.front_distances[1] < 400.0):
+        if (self.front_distances[1] < 200.0) & (self.front_distances[0] < 400.0):
             self.wheel_heights[0] = 430.0  # 左前抬升
             self.wheel_heights[1] = 430.0  # 右前抬升
             self.wheel_heights[2] = 430.0  # 左前抬升
@@ -87,12 +87,20 @@ class SuspensionController(Node):
             # self.get_logger().debug("检测到楼梯，前轮已抬升")
         # 示例：动作 2 - 前轮已经搭上台阶
         # 两个前向下视光电开关都检测到接触面 (值为 1.0)
-        if (self.front_downward[0] == 1.0) & (self.high >= 1):
-            self.wheel_heights[0] = 0.0  # 左前放下
-            self.wheel_heights[1] = 0.0  # 右前放下
+        if (self.front_distances[1] < 100.0) & (self.high >= 1):
+            if (self.front_downward[0] == 1.0) & (self.high >= 1):
+                self.wheel_heights[2] = 30.0  # 左前放下
+                self.wheel_heights[1] = 30.0  # 右前放下
+            if (self.front_downward[0] == 1.0) & (self.high >= 1):
+                self.wheel_heights[2] = 0.0  # 左前放下
+                self.wheel_heights[1] = 0.0  # 右前放下
         if (self.front_downward[1] == 1.0) & (self.high >= 1):
-            self.wheel_heights[2] = 0.0  # 左前放下
-            self.wheel_heights[3] = 0.0  # 右前放下 
+            if (self.front_downward[2] == 1.0) & (self.high >= 1):
+                self.wheel_heights[0] = 30.0  # 左前放下
+                self.wheel_heights[3] = 30.0  # 右前放下
+            if (self.front_downward[2] == 0.0) & (self.high >= 1):
+                self.wheel_heights[0] = 0.0  # 左前放下
+                self.wheel_heights[3] = 0.0  # 右前放下 
 
     def control_loop(self):
         """100Hz 定时器控制循环"""

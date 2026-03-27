@@ -7,9 +7,11 @@
 #include <vector>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <mutex>
 
 using namespace std::chrono_literals;
 
@@ -17,9 +19,7 @@ namespace ares_usb_comm
 {
 /**
  * @class UsbPassthroughNode
- * @brief ROS2 节点：纯净版动态透传节点。
- * 发送端监听: t0x[ID]_xxx (例如: /t0x01A3_cmd)
- * 接收端发布: r0x[ID]     (例如: /r0x01A3)
+ * @brief ROS2 节点：动态透传节点。修复了 USB 底层阻塞导致的断连问题。
  */
 class UsbPassthroughNode : public rclcpp::Node
 {
@@ -35,15 +35,19 @@ public:
             RCLCPP_INFO(this->get_logger(), "USB device connected successfully.");
         }
 
-        // 注册协议回调 (处理所有来自下位机的数据) --------------------------
+        // 注册协议回调 ----------------------------------------------------
         protocol_.register_sync_callback(
             [this](uint16_t data_id, const uint8_t *data, size_t len) {
                 handle_passthrough_rx(data_id, data, len);
             });
 
-        // 动态话题发现定时器 (1Hz)，用于自动扫描并建立下发通道 --------------
+        // 定时器 1: 动态发现下发 (TX) 话题 (1Hz)
         topic_discovery_timer_ = this->create_wall_timer(
             1s, std::bind(&UsbPassthroughNode::discover_passthrough_topics, this));
+
+        // 定时器 2: 异步创建上报 (RX) 通道 (10Hz)，剥离高耗时操作
+        pub_creation_timer_ = this->create_wall_timer(
+            100ms, std::bind(&UsbPassthroughNode::create_pending_publishers, this));
             
         RCLCPP_INFO(this->get_logger(), "Passthrough bridge initialized. Waiting for topics 't0x...' or USB data...");
     }
@@ -55,10 +59,7 @@ public:
     }
 
 private:
-    // ---------------- 动态透传功能 (ROS2 -> 下位机) ------------------------
-    /**
-     * @brief 自动发现前缀为 t0x 的话题并创建订阅 (下发通道建立)
-     */
+    // ---------------- 动态透传功能 (ROS2 -> 下位机 TX) ------------------------
     void discover_passthrough_topics()
     {
         auto topic_names_and_types = this->get_topic_names_and_types();
@@ -70,23 +71,14 @@ private:
                 clean_name = clean_name.substr(1);
             }
 
-            // 检查是否以 "t0x" 开头
             if (clean_name.length() > 3 && clean_name.substr(0, 3) == "t0x")
             {
-                // 提取 ID 字符串：查找 '_' 的位置，提取 t0x 之后的 16 进制字符
                 size_t underscore_pos = clean_name.find('_', 3);
-                std::string hex_str;
-                if (underscore_pos != std::string::npos) {
-                    hex_str = clean_name.substr(3, underscore_pos - 3);
-                } else {
-                    hex_str = clean_name.substr(3);
-                }
+                std::string hex_str = (underscore_pos != std::string::npos) ? clean_name.substr(3, underscore_pos - 3) : clean_name.substr(3);
 
-                // 校验提取出的是否是合法的 16 进制字符串
                 bool is_hex = !hex_str.empty() && std::all_of(hex_str.begin(), hex_str.end(), ::isxdigit);
                 if (!is_hex) continue;
 
-                // 检查话题类型是否为 Float32MultiArray
                 bool is_valid_type = false;
                 for (const auto& type : types) {
                     if (type == "std_msgs/msg/Float32MultiArray") {
@@ -96,7 +88,6 @@ private:
                 }
                 if (!is_valid_type) continue;
 
-                // 如果尚未订阅，则动态创建订阅通道
                 if (passthrough_subs_.find(clean_name) == passthrough_subs_.end())
                 {
                     uint16_t data_id = static_cast<uint16_t>(std::stoul(hex_str, nullptr, 16));
@@ -108,19 +99,12 @@ private:
                         });
                     
                     passthrough_subs_[clean_name] = sub;
-                    
-                    // 仅提示通道发现
-                    RCLCPP_INFO(this->get_logger(), 
-                        "🔗 [TX Channel Discovered] ROS Topic: '%s' ---> USB ID: 0x%04X", 
-                        topic_name.c_str(), data_id);
+                    RCLCPP_INFO(this->get_logger(), "🔗 [TX Channel] ROS Topic: '%s' ---> USB ID: 0x%04X", topic_name.c_str(), data_id);
                 }
             }
         }
     }
 
-    /**
-     * @brief ROS 话题接收回调，将不定长 Float 数组打包发往 USB
-     */
     void passthrough_tx_callback(uint16_t id, const std::string& topic_name, const std_msgs::msg::Float32MultiArray::SharedPtr msg)
     {
         size_t float_count = msg->data.size();
@@ -128,17 +112,12 @@ private:
 
         size_t byte_len = float_count * 4;
 
-        // 【长度监控 Log】如果这个 ID 是第一次发送，或者长度发生了动态改变，则打印 Log
         if (tx_known_lengths_.find(id) == tx_known_lengths_.end() || tx_known_lengths_[id] != byte_len) {
-            RCLCPP_INFO(this->get_logger(), 
-                "✅ [TX Data Transmitting] ROS Topic: '%s' ---> USB ID: 0x%04X | Length: %zu Bytes (%zu Floats)", 
-                topic_name.c_str(), id, byte_len, float_count);
-            tx_known_lengths_[id] = byte_len; // 更新记录的长度
+            RCLCPP_INFO(this->get_logger(), "✅ [TX Data] Topic: '%s' ---> ID: 0x%04X | %zu Bytes", topic_name.c_str(), id, byte_len);
+            tx_known_lengths_[id] = byte_len; 
         }
 
-        // 动态分配内存以适配不固定长度 (4 字节/float)
         std::vector<uint8_t> payload(byte_len);
-        
         for (size_t i = 0; i < float_count; ++i)
         {
             const uint8_t *float_bytes = reinterpret_cast<const uint8_t *>(&msg->data[i]);
@@ -154,70 +133,100 @@ private:
         }
     }
 
-    // ---------------- 动态透传功能 (下位机 -> ROS2) ------------------------
+    // ---------------- 动态透传功能 (下位机 -> ROS2 RX) ------------------------
     /**
-     * @brief 处理来自下位机的协议帧，自动创建 Publisher 并发布 (上报通道建立)
+     * @brief USB 接收回调。只做数据转换和发布，绝对不执行阻塞操作 (完美复刻 UsbBridgeNode 逻辑)
      */
     void handle_passthrough_rx(uint16_t data_id, const uint8_t *data, size_t len)
     {
-        if (len % 4 != 0) {
-            RCLCPP_WARN(this->get_logger(), "RX length %zu not a multiple of 4 (ID: 0x%04X)", len, data_id);
-            return;
-        }
+        if (len % 4 != 0) return;
 
-        size_t float_count = len / 4;
+        rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr pub = nullptr;
         
-        // 生成对应的话题名称，格式为 r0x + 16进制大写ID (例如: r0x01A3)
-        char topic_name_buf[32];
-        snprintf(topic_name_buf, sizeof(topic_name_buf), "r0x%04X", data_id); 
-        std::string clean_name = topic_name_buf; 
-
-        // 如果对应的 Publisher 不存在，则自动创建通道
-        if (passthrough_pubs_.find(data_id) == passthrough_pubs_.end())
+        // 快速查找是否已经建立了该 ID 的发布通道
         {
-            passthrough_pubs_[data_id] = this->create_publisher<std_msgs::msg::Float32MultiArray>(clean_name, 10);
+            std::lock_guard<std::mutex> lock(pub_mutex_);
+            auto it = passthrough_pubs_.find(data_id);
+            if (it != passthrough_pubs_.end()) {
+                pub = it->second;
+            }
+        }
+
+        // 如果通道存在，直接解包并发布
+        if (pub) 
+        {
+            size_t float_count = len / 4;
+            auto msg = std_msgs::msg::Float32MultiArray();
+            msg.data.resize(float_count);
+
+            for (size_t i = 0; i < float_count; ++i)
+            {
+                uint32_t temp = (uint32_t)data[i * 4 + 3] << 24 |
+                                (uint32_t)data[i * 4 + 2] << 16 |
+                                (uint32_t)data[i * 4 + 1] << 8 |
+                                (uint32_t)data[i * 4 + 0];
+                msg.data[i] = *reinterpret_cast<float *>(&temp);
+            }
             
-            // 首次建立通道，打印建立状态
-            RCLCPP_INFO(this->get_logger(), 
-                "🔗 [RX Channel Discovered] USB ID: 0x%04X ---> ROS Topic: '/%s'", 
-                data_id, clean_name.c_str());
-        }
-
-        // 【长度监控 Log】如果这个 ID 是第一次接收，或者长度发生了动态改变，则打印 Log
-        if (rx_known_lengths_.find(data_id) == rx_known_lengths_.end() || rx_known_lengths_[data_id] != len) {
-            RCLCPP_INFO(this->get_logger(), 
-                "✅ [RX Data Receiving] USB ID: 0x%04X ---> ROS Topic: '/%s' | Length: %zu Bytes (%zu Floats)", 
-                data_id, clean_name.c_str(), len, float_count);
-            rx_known_lengths_[data_id] = len; // 更新记录的长度
-        }
-
-        // 解包并发布
-        auto msg = std_msgs::msg::Float32MultiArray();
-        msg.data.resize(float_count);
-
-        for (size_t i = 0; i < float_count; ++i)
+            // 执行发布
+            pub->publish(msg);
+        } 
+        else 
         {
-            uint32_t temp = (uint32_t)data[i * 4 + 3] << 24 |
-                            (uint32_t)data[i * 4 + 2] << 16 |
-                            (uint32_t)data[i * 4 + 1] << 8 |
-                            (uint32_t)data[i * 4 + 0];
-            msg.data[i] = *reinterpret_cast<float *>(&temp);
+            // 如果通道不存在，将其放入待创建名单，让 ROS 主线程去慢吞吞地创建，保护 USB 线程
+            std::lock_guard<std::mutex> lock(pending_mutex_);
+            pending_pubs_to_create_.insert(data_id);
+        }
+    }
+
+    /**
+     * @brief 异步创建发布通道。脱离了 USB 中断上下文，安全执行高耗时的 create_publisher
+     */
+    void create_pending_publishers()
+    {
+        std::unordered_set<uint16_t> local_pending;
+        
+        // 快速获取名单并清空
+        {
+            std::lock_guard<std::mutex> lock(pending_mutex_);
+            if (pending_pubs_to_create_.empty()) return;
+            std::swap(local_pending, pending_pubs_to_create_);
         }
 
-        passthrough_pubs_[data_id]->publish(msg);
+        // 慢慢创建 ROS 2 Publisher
+        for (uint16_t data_id : local_pending)
+        {
+            char topic_name_buf[32];
+            snprintf(topic_name_buf, sizeof(topic_name_buf), "r0x%04X", data_id); 
+            std::string clean_name = topic_name_buf; 
+
+            std::lock_guard<std::mutex> lock(pub_mutex_);
+            if (passthrough_pubs_.find(data_id) == passthrough_pubs_.end())
+            {
+                passthrough_pubs_[data_id] = this->create_publisher<std_msgs::msg::Float32MultiArray>(clean_name, 10);
+                RCLCPP_INFO(this->get_logger(), "🔗 [RX Channel Built] ID: 0x%04X ---> Topic: '/%s'", data_id, clean_name.c_str());
+            }
+        }
     }
 
     // ---------------- 成员变量 ------------------------------------------
     ares::Protocol protocol_{};
 
-    // 动态透传定时器与记录容器
     rclcpp::TimerBase::SharedPtr topic_discovery_timer_; 
+    rclcpp::TimerBase::SharedPtr pub_creation_timer_; 
+
     std::unordered_map<std::string, rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr> passthrough_subs_;
+    
+    // 保护 Publisher 字典的锁
+    std::mutex pub_mutex_;
     std::unordered_map<uint16_t, rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr> passthrough_pubs_;
 
-    // 用于记录上次收发的长度，防止终端被 Log 刷屏
+    // 记录长度的字典（用于日志去重）
     std::unordered_map<uint16_t, size_t> tx_known_lengths_;
-    std::unordered_map<uint16_t, size_t> rx_known_lengths_;
+
+    // 异步创建相关
+    std::mutex pending_mutex_;
+    std::unordered_set<uint16_t> pending_pubs_to_create_;
 };
 
 } // namespace ares_usb_comm
