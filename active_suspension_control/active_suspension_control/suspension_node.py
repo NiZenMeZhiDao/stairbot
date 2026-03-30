@@ -22,7 +22,7 @@ class SuspensionController(Node):
         # 100Hz 发布四轮高度 (Float32MultiArray, 4个数据)
         self.height_pub = self.create_publisher(
             Float32MultiArray, 
-            'wheel_heights', 
+            't0x0101_wheel_heights', 
             10)
 
         # --- 订阅者 ---
