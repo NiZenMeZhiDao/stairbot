@@ -1,0 +1,53 @@
+{
+    "version": "2.0.0",
+    "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "dedicated",
+        "showReuseMessage": false
+    },
+    "tasks": [
+        {
+            "label": "run",
+            "type": "shell",
+            "command": "colcon build  && source install/setup.bash && ros2 launch active_suspension_control suspension.launch.py",
+        },
+        {
+            "label": "Monitor",
+            "dependsOrder": "parallel",
+            "dependsOn": ["tx", "rx", "sensor"]
+        },
+        {
+            "label": "tx",
+            "type": "shell",
+            "command": "ros2 topic echo t0x0101_wheel_heights",
+            "presentation": {
+                "group": "ros-group",
+                "panel": "new", // 强制开启新终端
+                "focus": true
+            }
+        },
+        {
+            "label": "rx",
+            "type": "shell",
+            "command": "ros2 topic echo r0x0201",
+            "presentation": {
+                "group": "ros-group",
+                "panel": "new", // 强制开启新终端
+                "focus": true
+            }
+        },
+        {
+            "label": "sensor",
+            "type": "shell",
+            "command": "ros2 topic echo sensor_distances",
+            "presentation": {
+                "group": "ros-group",
+                "panel": "new", // 强制开启新终端
+                "focus": true
+            }
+        }
+        
+    ]
+}
