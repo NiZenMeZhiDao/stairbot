@@ -105,7 +105,10 @@ class SuspensionController(Node):
         if len(msg.data) >= 6:
             for i in range(6):
                 # 滑动平均滤波剔除噪点
-                self.distance_buffers[i].append(msg.data[i])
+                if i == 3:  # 如果是第 4 个接口
+                    self.distance_buffers[i].append(msg.data[6])  # 使用第 7 个接口的数据
+                else:
+                    self.distance_buffers[i].append(msg.data[i])
                 self.distance_filtered[i] = sum(self.distance_buffers[i]) / len(self.distance_buffers[i])
 
     def hw_status_cb(self, msg):
