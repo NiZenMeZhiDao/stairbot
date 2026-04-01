@@ -9,9 +9,14 @@
     },
     "tasks": [
         {
+            "label": "build",
+            "type": "shell",
+            "command": "colcon build  && source install/setup.zsh",
+        },
+        {
             "label": "run",
             "type": "shell",
-            "command": "colcon build  && source install/setup.bash && ros2 launch active_suspension_control suspension.launch.py",
+            "command": "source install/setup.zsh && ros2 launch active_suspension_control suspension.launch.py",
         },
         {
             "label": "Monitor",

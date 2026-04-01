@@ -1,6 +1,11 @@
 {
     "VsCodeTaskButtons.tasks": [
         {
+            "label": "build",
+            "task": "build",
+            "tooltip": "Build the Zephyr project"
+        },
+        {
             "label": "run",
             "task": "run",
             "tooltip": "Build the Zephyr project"
