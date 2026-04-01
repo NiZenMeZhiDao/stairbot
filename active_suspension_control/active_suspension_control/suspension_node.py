@@ -211,7 +211,8 @@ class SuspensionController(Node):
 
         # ================= 上台阶逻辑 =================
         elif state == State.UP_1_PREPARE:
-            
+            self.target_height = self.H_LIFT_LOW
+            self.wheel_heights_target = [self.target_height] * 4
             if self.v_distances[0] > 200:
                 if self.v_distances[1] < 250:
                     self.target_height = self.H_LIFT_HIGH
