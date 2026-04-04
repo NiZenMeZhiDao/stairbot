@@ -2,7 +2,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Int32
 import math
 from enum import Enum
 import collections
@@ -51,18 +51,18 @@ class SuspensionController(Node):
         
         # 物理层状态
         self.raw_cmd_vel = Twist()
-        self.distances_raw = [0.0] * 6
+        self.distances_raw = [0.0] * 8
         self.pe_switches_raw = [0] * 4
         self.wheel_heights_current = [0.0] * 4  # [FL, FR, RL, RR]
         
         # 滤波后状态
-        self.distance_filtered = [0.0] * 6
+        self.distance_filtered = [0.0] * 8
         self.pe_switches_filtered = [0] * 4
         
         # 输出控制状态
         self.wheel_heights_target = [self.H_INIT] * 4
         self.chassis_cmd_vel = Twist()
-        self.v_distances = [0.0] * 6
+        self.v_distances_idx = [0.0] * 6
 
         # 虚拟层状态 (根据方向映射后的 前左, 前右, 后左, 后右)
         self.v_wheels_idx = [0, 1, 2, 3] 
@@ -80,7 +80,7 @@ class SuspensionController(Node):
         
         self.pub_wheel_heights = self.create_publisher(Float32MultiArray, 't0x0101_wheel_heights', 10)
         self.pub_chassis_vel = self.create_publisher(Twist, 'cmd_vel_chassis', 10) # 实际下发到底盘的速度
-
+        self.pub_state = self.create_publisher(Int32, 'current_state', 10)
         # 控制主循环 (100Hz)
         self.timer = self.create_timer(0.01, self.control_loop)
         self.get_logger().info("Step Climber Node Initialized.")
@@ -92,8 +92,8 @@ class SuspensionController(Node):
         if msg.linear.x > 0:
             self.current_direction = Direction.FORWARD
             self.is_reversing = False
-        elif msg.linear.x < 0:
-            self.is_reversing = True # 触发倒退逻辑
+        # elif msg.linear.x < 0:
+            # self.is_reversing = True # 触发倒退逻辑
         elif msg.linear.y > 0:
             self.current_direction = Direction.LEFT
             self.is_reversing = False
@@ -102,13 +102,9 @@ class SuspensionController(Node):
             self.is_reversing = False
 
     def dist_cb(self, msg):
-        if len(msg.data) >= 6:
-            for i in range(6):
-                # 滑动平均滤波剔除噪点
-                if i == 3:  # 如果是第 4 个接口
-                    self.distance_buffers[i].append(msg.data[6])  # 使用第 7 个接口的数据
-                else:
-                    self.distance_buffers[i].append(msg.data[i])
+        if len(msg.data) >= 8:
+            for i in range(8):
+                self.distance_buffers[i].append(msg.data[i])
                 self.distance_filtered[i] = sum(self.distance_buffers[i]) / len(self.distance_buffers[i])
 
     def hw_status_cb(self, msg):
@@ -131,35 +127,28 @@ class SuspensionController(Node):
             self.raw_cmd_vel.linear.x = msg.data[8]  
             self.raw_cmd_vel.linear.y = msg.data[9]
             self.raw_cmd_vel.angular.z = msg.data[10]
-            if self.raw_cmd_vel.linear.x > 0:
-                self.current_direction = Direction.FORWARD
-                self.is_reversing = False
-            elif self.raw_cmd_vel.linear.x < 0:
-                self.is_reversing = True # 触发倒退逻辑
-            elif self.raw_cmd_vel.linear.y > 0:
-                self.current_direction = Direction.LEFT
-                self.is_reversing = False
-            elif self.raw_cmd_vel.linear.y < 0:
-                self.current_direction = Direction.RIGHT
-                self.is_reversing = False
-        
+            if self.current_state == State.IDLE:
+                if(msg.data[11] > 0):
+                    self.current_direction = Direction.RIGHT
+                elif(msg.data[11] < 0):
+                    self.current_direction = Direction.LEFT
+                else:
+                    self.current_direction = Direction.FORWARD        
     # ================= 核心映射与控制 =================
     def update_virtual_mapping(self):
         """根据行驶方向，将物理轮/传感器映射为虚拟的 前左(VFL), 前右(VFR), 后左(VRL), 后右(VRR)"""
         if self.current_direction == Direction.FORWARD:
             self.v_wheels_idx = [2, 1, 0, 3] # [FL, FR, RL, RR]
             self.v_pe_idx = [0, 1, 3, 2]     # 假设 0,1为前，2,3为后
-            self.v_distances = self.distance_filtered # 前后距离传感器不变
+            self.v_distances_idx = [0, 1, 5, 4] # 前后距离传感器不变
         elif self.current_direction == Direction.LEFT:
-            # 向左移动时，物理的RL变成虚拟的FL，物理的FL变成虚拟的FR...以此类推
             self.v_wheels_idx = [0, 2, 3, 1] 
-            # 复用风车阵列光电开关 (具体索引视硬件连线为准，这里做概念演示)
             self.v_pe_idx = [1, 2, 0, 3]     
-            self.v_distances = [self.distance_filtered[2], self.distance_filtered[3], self.distance_filtered[0], self.distance_filtered[1], self.distance_filtered[4], self.distance_filtered[5]] # 左右交换
+            self.v_distances_idx = [2, 3, 7, 6]
         elif self.current_direction == Direction.RIGHT:
             self.v_wheels_idx = [1, 3, 2, 0]
             self.v_pe_idx = [3, 0, 2, 1]
-            self.v_distances = [self.distance_filtered[4], self.distance_filtered[5], self.distance_filtered[0], self.distance_filtered[1], self.distance_filtered[2], self.distance_filtered[3]] # 左右交换
+            self.v_distances_idx = [6, 7, 3, 2]
 
     def check_height_reached(self, virtual_indices, target_h):
         """高度闭环验证"""
@@ -176,54 +165,47 @@ class SuspensionController(Node):
     def control_loop(self):
         self.update_virtual_mapping()
         
-        v_fl, v_fr, v_rl, v_rr = 0, 1, 2, 3 # 虚拟索引常量
-        
-        # 状态机逻辑执行
+        v_fl, v_fr, v_rl, v_rr = 0, 1, 2, 3 
+
         self.execute_state_machine(v_fl, v_fr, v_rl, v_rr)
-        
-        # 发布高度与速度
+
         h_msg = Float32MultiArray(data=self.wheel_heights_target)
         self.pub_wheel_heights.publish(h_msg)
         self.pub_chassis_vel.publish(self.chassis_cmd_vel)
+        
+        state_msg = Int32(data=[self.current_state.value])
+        self.pub_state.publish(state_msg)
 
     def execute_state_machine(self, v_fl, v_fr, v_rl, v_rr):
         """核心状态机"""
         state = self.current_state
-        
-        # 速度仲裁：默认透传，如果进入特殊状态会被覆盖
+     
         self.chassis_cmd_vel.linear.x = self.raw_cmd_vel.linear.x
         self.chassis_cmd_vel.linear.y = self.raw_cmd_vel.linear.y
         self.chassis_cmd_vel.angular.z = self.raw_cmd_vel.angular.z
 
-        # 倒退逻辑处理 (简易实现：当探测到外部下发反向速度时，强制回退上一状态)
-        if self.is_reversing and state != State.IDLE:
-            # 真实场景中需要建立反向状态机或回退映射，此处简单演示：速度变反，限制速度并尝试收起/放下对应的轮子。
-            self.chassis_cmd_vel.linear.x = math.copysign(self.CREEP_SPEED, self.raw_cmd_vel.linear.x)
-            self.get_logger().warn("Reversing during step sequence! Proceeding with caution.")
-
         if state == State.IDLE:
-            # 测距传感器前下（假设索引0）检测到台阶
-            front_dist = self.v_distances[1]
-            if front_dist < 200:  
+            front_dist = self._get_v_distance(1)
+            if front_dist < 200:  # 前方有台阶，准备上台阶
                 self.current_state = State.UP_1_PREPARE
-            if self.v_distances[0] > 200:
+            if self._get_v_distance(0) > 200:
                 self.current_state = State.DOWN_1_PREPARE
 
-        # ================= 上台阶逻辑 =================
+        
         elif state == State.UP_1_PREPARE:
             self.target_height = self.H_LIFT_LOW
             self.wheel_heights_target = [self.target_height] * 4
-            if self.v_distances[0] > 200:
-                if self.v_distances[1] < 250:
+            if self._get_v_distance(0) > 200: #已经到200
+                if self._get_v_distance(1) < 200: #还有遮挡，是400
                     self.target_height = self.H_LIFT_HIGH
                     self.wheel_heights_target = [self.target_height] * 4
-                    if self.check_height_reached([v_fl, v_fr, v_rl, v_rr], self.target_height):
-                        self.current_state = State.UP_2_LIFT
-                elif self.v_distances[1] > 200:
+                    
+                    self.current_state = State.UP_2_LIFT
+                elif self._get_v_distance(1) > 250: #无遮挡，是200
                     self.target_height = self.H_LIFT_LOW
                     self.wheel_heights_target = [self.target_height] * 4
-                    if self.check_height_reached([v_fl, v_fr, v_rl, v_rr], self.target_height):
-                        self.current_state = State.UP_2_LIFT
+                    
+                    self.current_state = State.UP_2_LIFT
 
         elif state == State.UP_2_LIFT:
             # 整体升起，速度强制为 0
@@ -236,7 +218,7 @@ class SuspensionController(Node):
             # 前轮搭接：钳位速度为安全蠕行速度
             self._creep_forward()
             # 检查前置向下测距 (假设索引1代表前从动轮测距)
-            if self.v_distances[0] < 80.0:  # 已经稳稳搭在平台上
+            if self._get_v_distance(0) < 80.0:  # 已经稳稳搭在平台上
                 self.current_state = State.UP_4_RETRACT_FRONT
 
         elif state == State.UP_4_RETRACT_FRONT:
@@ -248,18 +230,18 @@ class SuspensionController(Node):
 
         elif state == State.UP_5_FRONT_LAND:
             self._creep_forward()
-            # 检查虚拟前轮的下视光电开关 (无遮挡表示处于平台上空)
+            # 检查虚拟前轮的下视光电开关 (有遮挡表示处于平台上空)
             pe_front_clear = (self._get_v_pe(v_fl) == 1) #1有遮挡
             if pe_front_clear:
-                self._set_v_wheel_height([v_fl, v_fr], 30.0) # 降下前主动轮
-                self._set_v_wheel_height([v_rl, v_rr], self.target_height + 30.0) 
+                self._set_v_wheel_height([v_fl, v_fr], 10.0) # 降下前主动轮
+                self._set_v_wheel_height([v_rl, v_rr], self.target_height + 10.0) 
                 self.current_state = State.UP_6_SIDE_DOCK_RETRACT_REAR
 
         elif state == State.UP_6_SIDE_DOCK_RETRACT_REAR:
             self._creep_forward()
-            # 假设侧方光电开关(或距离传感器)被遮挡，表明车体中部搭上
+            # 假设后轮前方光电开关被遮挡，表明车体中部搭上
             # 此时立即收起后轮
-            if self._get_v_pe(v_rl) == 1: # 后轮光电被遮挡
+            if self._get_v_pe(v_rl) == 1: 
                 self._set_v_wheel_height([v_rl, v_rr], 0.0)
                 if self.check_height_reached([v_rl, v_rr], 0.0):
                     self.current_state = State.UP_7_REAR_LAND
@@ -267,8 +249,8 @@ class SuspensionController(Node):
         elif state == State.UP_7_REAR_LAND:
             self._creep_forward()
             if self._get_v_pe(v_rr) == 1: # 后轮光电被遮挡
-                self._set_v_wheel_height([v_rl, v_rr], 30.0)
-                if self.check_height_reached([v_rl, v_rr], 30.0):
+                self._set_v_wheel_height([v_rl, v_rr], 10.0)
+                if self.check_height_reached([v_rl, v_rr], 10.0):
                     self.current_state = State.UP_8_RECOVER
 
         elif state == State.UP_8_RECOVER:
@@ -279,18 +261,17 @@ class SuspensionController(Node):
                 self.current_state = State.IDLE
 
         # ================= 下台阶逻辑 =================
-        # 下台阶逻辑按描述简化实现
         elif state == State.DOWN_1_PREPARE:
             self._stop_chassis()
-            if self.v_distances[0] > 380:
+            if self._get_v_distance(0) > 380: #检测200还是400
                 self.target_height = self.H_LIFT_HIGH # 反向高度
-            elif self.v_distances[0] > 180:
+            elif self._get_v_distance(0) > 180:
                 self.target_height = self.H_LIFT_LOW
             self.current_state = State.DOWN_2_FRONT_HOVER_LAND
             
         elif state == State.DOWN_2_FRONT_HOVER_LAND:
             self._creep_forward()
-            pe_front_hover = (self._get_v_pe(v_fl) == 0)
+            pe_front_hover = (self._get_v_pe(v_fl) == 0) # 前轮光电开关无遮挡，表示前轮悬空放下前轮
             if pe_front_hover:
                 self._set_v_wheel_height([v_fl, v_fr], self.target_height + 30.0)
                 if self.check_height_reached([v_fl, v_fr], self.target_height +30.0):
@@ -298,16 +279,16 @@ class SuspensionController(Node):
                     
         elif state == State.DOWN_3_REAR_HOVER_LAND:
             self._creep_forward()
-            pe_rear_hover = (self._get_v_pe(v_rr) == 0)
+            pe_rear_hover = (self._get_v_pe(v_rr) == 0) #后轮光电开关无遮挡，表示后轮悬空放下后轮
             if pe_rear_hover:
                 self.current_state = State.DOWN_4_LAND
                     
         elif state == State.DOWN_4_LAND:
             self._stop_chassis()
-            self._set_v_wheel_height([v_rl, v_rr], self.target_height +30.0)
+            self._set_v_wheel_height([v_rl, v_rr], self.target_height +30.0) #放下后轮
             if self.check_height_reached([v_rl, v_rr], self.target_height + 30.0):
                 self._creep_forward()
-                if self.v_distances[0] > 200.0:
+                if self._get_v_distance(3) > 200.0:
                     self.current_state = State.DOWN_5_RECOVER
 
         elif state == State.DOWN_5_RECOVER:
@@ -317,8 +298,6 @@ class SuspensionController(Node):
                 self.get_logger().info("Down step sequence complete.")
                 self.current_state = State.IDLE
 
-
-    # ================= 辅助函数 =================
     def _stop_chassis(self):
         """强制速度为0"""
         self.chassis_cmd_vel.linear.x = 0.0
@@ -333,7 +312,6 @@ class SuspensionController(Node):
             self.chassis_cmd_vel.linear.y = self.CREEP_SPEED
         elif self.current_direction == Direction.RIGHT:
             self.chassis_cmd_vel.linear.y = -self.CREEP_SPEED
-        self.chassis_cmd_vel.angular.z = 0.0
 
     def _set_v_wheel_height(self, v_indices, height):
         """设置虚拟轮的物理高度"""
@@ -345,6 +323,11 @@ class SuspensionController(Node):
         """获取虚拟轮对应的光电开关状态"""
         phys_pe_idx = self.v_pe_idx[v_idx]
         return self.pe_switches_filtered[phys_pe_idx]
+    
+    def _get_v_distance(self, v_idx):
+        """获取虚拟轮对应的距离传感器值"""
+        phys_dist_idx = self.v_distances_idx[v_idx]
+        return self.distance_filtered[phys_dist_idx]
 
 def main(args=None):
     rclpy.init(args=args)
