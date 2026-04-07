@@ -6,7 +6,7 @@ from std_msgs.msg import Float32MultiArray, Int32
 import math
 from enum import Enum
 import collections
-import time
+from sensor_msgs.msg import Imu
 
 # 定义系统状态机
 class State(Enum):
@@ -43,12 +43,21 @@ class SuspensionController(Node):
         self.CREEP_SPEED = 0.2   # 安全蠕行速度 (m/s)
         self.HEIGHT_TOLERANCE = 0.05 # 5% 误差范围允许转跳
         
+        self.control_by_sbus = True
+
         # --- 状态变量 ---
         self.current_state = State.IDLE
         self.target_height = 0.0  # 当前识别到的台阶目标高度
         self.current_direction = Direction.FORWARD
         self.is_reversing = False
-        
+
+        self.YAW_KP = 1.0  
+        self.YAW_TOLERANCE = 0.05 
+        self.MAX_ANGULAR_VEL = 0.5 
+        self.current_yaw = 0.0
+        self.target_yaw = 0.0   
+        self.yaw_correction_enabled = True 
+
         # 物理层状态
         self.raw_cmd_vel = Twist()
         self.distances_raw = [0.0] * 8
@@ -69,37 +78,61 @@ class SuspensionController(Node):
         self.v_pe_idx = [0, 1, 2, 3]
 
         # --- 滤波器初始化 ---
-        self.distance_buffers = [collections.deque(maxlen=5) for _ in range(6)]
+        self.distance_buffers = [collections.deque(maxlen=5) for _ in range(8)]
         self.pe_debounce_counters = [0] * 4  # 用于 10ms 防抖 (主频 100Hz 下 1 帧 = 10ms)
         self.pe_last_states = [0] * 4
         
         # --- ROS 2 接口 ---
+        self.sub_direction = self.create_subscription(Int32, 'direction', self.direction_cb, 10)
         self.sub_cmd_vel = self.create_subscription(Twist, 'cmd_vel', self.cmd_vel_cb, 10)
         self.sub_sensor_dist = self.create_subscription(Float32MultiArray, 'sensor_distances', self.dist_cb, 10)
         self.sub_r0x0201 = self.create_subscription(Float32MultiArray, 'r0x0201', self.hw_status_cb, 10)
-        
-        self.pub_wheel_heights = self.create_publisher(Float32MultiArray, 't0x0101_wheel_heights', 10)
+        self.sub_imu = self.create_subscription(Imu, 'imu/data', self.imu_cb, 10)
+
+        self.pub_action = self.create_publisher(Float32MultiArray, 't0x0101_action', 10)
         self.pub_chassis_vel = self.create_publisher(Twist, 'cmd_vel_chassis', 10) # 实际下发到底盘的速度
         self.pub_state = self.create_publisher(Int32, 'current_state', 10)
         # 控制主循环 (100Hz)
-        self.timer = self.create_timer(0.01, self.control_loop)
+        self.delay_timer = self.create_timer(0.2, self.start_control_loop)
         self.get_logger().info("Step Climber Node Initialized.")
+    
+    def start_control_loop(self):
+        self.delay_timer.cancel()
+        self.timer = self.create_timer(0.01, self.control_loop)
 
-    # ================= 数据接收与滤波 =================
+    def direction_cb(self, msg):
+        if self.current_state != State.IDLE:
+            return
+        if self.control_by_sbus:
+            return
+        if msg.data == 0:
+            self.current_direction = Direction.FORWARD
+        elif msg.data == -1:
+            self.current_direction = Direction.LEFT
+        elif msg.data == 1:
+            self.current_direction = Direction.RIGHT
+        
+    def imu_cb(self, msg):
+        qx = msg.orientation.x
+        qy = msg.orientation.y
+        qz = msg.orientation.z
+        qw = msg.orientation.w
+        self.current_yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+
+    def yaw_correction(self):
+        if not self.yaw_correction_enabled:
+            return 0.0
+        yaw_error = self.normalize_angle(self.target_yaw - self.current_yaw)
+        if abs(yaw_error) < self.YAW_TOLERANCE:
+            return 0.0
+        angular_correction = self.YAW_KP * yaw_error
+        angular_correction = max(-self.MAX_ANGULAR_VEL, 
+                                min(self.MAX_ANGULAR_VEL, angular_correction))
+        self.chassis_cmd_vel.angular.z = angular_correction
+
+        
     def cmd_vel_cb(self, msg):
         self.raw_cmd_vel = msg
-        # 仲裁方向逻辑
-        if msg.linear.x > 0:
-            self.current_direction = Direction.FORWARD
-            self.is_reversing = False
-        # elif msg.linear.x < 0:
-            # self.is_reversing = True # 触发倒退逻辑
-        elif msg.linear.y > 0:
-            self.current_direction = Direction.LEFT
-            self.is_reversing = False
-        elif msg.linear.y < 0:
-            self.current_direction = Direction.RIGHT
-            self.is_reversing = False
 
     def dist_cb(self, msg):
         if len(msg.data) >= 8:
@@ -127,7 +160,7 @@ class SuspensionController(Node):
             self.raw_cmd_vel.linear.x = msg.data[8]  
             self.raw_cmd_vel.linear.y = msg.data[9]
             self.raw_cmd_vel.angular.z = msg.data[10]
-            if self.current_state == State.IDLE:
+            if (self.current_state == State.IDLE) & (self.control_by_sbus):
                 if(msg.data[11] > 0):
                     self.current_direction = Direction.RIGHT
                 elif(msg.data[11] < 0):
@@ -168,12 +201,15 @@ class SuspensionController(Node):
         v_fl, v_fr, v_rl, v_rr = 0, 1, 2, 3 
 
         self.execute_state_machine(v_fl, v_fr, v_rl, v_rr)
+        self.yaw_correction()  
 
-        h_msg = Float32MultiArray(data=self.wheel_heights_target)
-        self.pub_wheel_heights.publish(h_msg)
+        msg = []
+        msg.extend(self.wheel_heights_target)
+        msg.extend([self.chassis_cmd_vel.linear.x, self.chassis_cmd_vel.linear.y, self.chassis_cmd_vel.angular.z])
+        self.pub_action.publish(msg)
         self.pub_chassis_vel.publish(self.chassis_cmd_vel)
         
-        state_msg = Int32(data=[self.current_state.value])
+        state_msg = Int32(data=self.current_state.value)
         self.pub_state.publish(state_msg)
 
     def execute_state_machine(self, v_fl, v_fr, v_rl, v_rr):
@@ -328,6 +364,14 @@ class SuspensionController(Node):
         """获取虚拟轮对应的距离传感器值"""
         phys_dist_idx = self.v_distances_idx[v_idx]
         return self.distance_filtered[phys_dist_idx]
+
+    def normalize_angle(self, angle):
+        """将角度标准化到[-π, π]范围"""
+        while angle > math.pi:
+            angle -= 2 * math.pi
+        while angle < -math.pi:
+            angle += 2 * math.pi
+        return angle
 
 def main(args=None):
     rclpy.init(args=args)
