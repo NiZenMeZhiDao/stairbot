@@ -23,8 +23,7 @@ class State(Enum):
     DOWN_1_PREPARE = 20
     DOWN_2_FRONT_HOVER_LAND = 21
     DOWN_3_REAR_HOVER_LAND = 22
-    DOWN_4_LAND = 23
-    DOWN_5_RECOVER = 24
+    
 
 class Direction(Enum):
     FORWARD = 0
@@ -41,7 +40,7 @@ class SuspensionController(Node):
         self.H_LIFT_HIGH = 400.0  # 台阶高度2
         self.H_INIT = 30.0        # 初始/常规运动姿态高度
         self.CREEP_SPEED = 0.2   # 安全蠕行速度 (m/s)
-        self.HEIGHT_TOLERANCE = 0.05 # 5% 误差范围允许转跳
+        self.HEIGHT_TOLERANCE = 15.0 
         
         self.control_by_sbus = True
 
@@ -148,7 +147,7 @@ class SuspensionController(Node):
                 # 10ms (1 frame) 防抖逻辑
                 if current_pe != self.pe_last_states[i]:
                     self.pe_debounce_counters[i] += 1
-                    if self.pe_debounce_counters[i] >= 1: # 连续1次跳变(10ms)确认
+                    if self.pe_debounce_counters[i] >= 5: # 连续1次跳变(10ms)确认
                         self.pe_switches_filtered[i] = current_pe
                         self.pe_last_states[i] = current_pe
                         self.pe_debounce_counters[i] = 0
@@ -188,11 +187,8 @@ class SuspensionController(Node):
         for v_idx in virtual_indices:
             phys_idx = self.v_wheels_idx[v_idx]
             curr_h = self.wheel_heights_current[phys_idx]
-            # 允许 5% 误差，若目标为 0，则绝对误差 < 5mm
-            if target_h == 0:
-                if abs(curr_h) > 5.0: return False
-            else:
-                if abs(curr_h - target_h) > (target_h * self.HEIGHT_TOLERANCE): return False
+            if abs(curr_h - target_h) > self.HEIGHT_TOLERANCE:
+                return False
         return True
 
     def control_loop(self):
@@ -206,7 +202,9 @@ class SuspensionController(Node):
         msg = []
         msg.extend(self.wheel_heights_target)
         msg.extend([self.chassis_cmd_vel.linear.x, self.chassis_cmd_vel.linear.y, self.chassis_cmd_vel.angular.z])
-        self.pub_action.publish(msg)
+        ros_msg = Float32MultiArray()
+        ros_msg.data = msg
+        self.pub_action.publish(ros_msg)
         self.pub_chassis_vel.publish(self.chassis_cmd_vel)
         
         state_msg = Int32(data=self.current_state.value)
@@ -237,7 +235,7 @@ class SuspensionController(Node):
                     self.wheel_heights_target = [self.target_height] * 4
                     
                     self.current_state = State.UP_2_LIFT
-                elif self._get_v_distance(1) > 250: #无遮挡，是200
+                elif self._get_v_distance(1) > 200: #无遮挡，是200
                     self.target_height = self.H_LIFT_LOW
                     self.wheel_heights_target = [self.target_height] * 4
                     
@@ -260,33 +258,42 @@ class SuspensionController(Node):
         elif state == State.UP_4_RETRACT_FRONT:
             # 收起前主动轮，等待电机到位
             self._stop_chassis()
-            self._set_v_wheel_height([v_fl, v_fr], 0.0) # 0为与从动轮齐平
-            if self.check_height_reached([v_fl, v_fr], 0.0):
-                self.current_state = State.UP_5_FRONT_LAND
+            self._set_v_wheel_height([v_fl, v_fr], 5.0) # 0为与从动轮齐平
+            self.current_state = State.UP_5_FRONT_LAND
 
         elif state == State.UP_5_FRONT_LAND:
             self._creep_forward()
             # 检查虚拟前轮的下视光电开关 (有遮挡表示处于平台上空)
             pe_front_clear = (self._get_v_pe(v_fl) == 1) #1有遮挡
             if pe_front_clear:
-                self._set_v_wheel_height([v_fl, v_fr], 10.0) # 降下前主动轮
-                self._set_v_wheel_height([v_rl, v_rr], self.target_height + 10.0) 
+                self._set_v_wheel_height([v_fl, v_fr], 5.0) # 降下前主动轮
+                self._set_v_wheel_height([v_rl, v_rr], self.target_height + 5.0) 
                 self.current_state = State.UP_6_SIDE_DOCK_RETRACT_REAR
 
         elif state == State.UP_6_SIDE_DOCK_RETRACT_REAR:
             self._creep_forward()
             # 假设后轮前方光电开关被遮挡，表明车体中部搭上
             # 此时立即收起后轮
+            if not hasattr(self, '_up6_delay_counter'):
+                self._up6_delay_counter = 0
             if self._get_v_pe(v_rl) == 1: 
-                self._set_v_wheel_height([v_rl, v_rr], 0.0)
-                if self.check_height_reached([v_rl, v_rr], 0.0):
-                    self.current_state = State.UP_7_REAR_LAND
+                self._up6_delay_counter += 1  # 开始累加 (1次 = 10ms)
+                # 设定延迟阈值，例如 10 帧 = 0.1 秒
+                if self._up6_delay_counter >= 20: 
+                    self._set_v_wheel_height([v_rl, v_rr], 0.0)
+                    
+                    if self.check_height_reached([v_rl, v_rr], 0.0):
+                        self._up6_delay_counter = 0  # 状态切换前清零，避免影响下一次爬楼
+                        self.current_state = State.UP_7_REAR_LAND
+            else:
+                # 信号消失则重置计数器（防抖/防误触）
+                self._up6_delay_counter = 0
 
         elif state == State.UP_7_REAR_LAND:
             self._creep_forward()
             if self._get_v_pe(v_rr) == 1: # 后轮光电被遮挡
-                self._set_v_wheel_height([v_rl, v_rr], 10.0)
-                if self.check_height_reached([v_rl, v_rr], 10.0):
+                self._set_v_wheel_height([v_rl, v_rr], 5.0)
+                if self.check_height_reached([v_rl, v_rr], 5.0):
                     self.current_state = State.UP_8_RECOVER
 
         elif state == State.UP_8_RECOVER:
@@ -298,41 +305,30 @@ class SuspensionController(Node):
 
         # ================= 下台阶逻辑 =================
         elif state == State.DOWN_1_PREPARE:
-            self._stop_chassis()
-            if self._get_v_distance(0) > 380: #检测200还是400
-                self.target_height = self.H_LIFT_HIGH # 反向高度
-            elif self._get_v_distance(0) > 180:
-                self.target_height = self.H_LIFT_LOW
-            self.current_state = State.DOWN_2_FRONT_HOVER_LAND
+            self._creep_forward()
+            if self._get_v_pe(v_fl) == 0: #前轮光电开关无遮挡，表示前轮悬空
+                if self._get_v_distance(0) > 380: #检测200还是400
+                    self.target_height = self.H_LIFT_HIGH # 反向高度
+                elif self._get_v_distance(0) > 180:
+                    self.target_height = self.H_LIFT_LOW
+                self._set_v_wheel_height([v_fl, v_fr], self.target_height + 30.0)
+                if self.check_height_reached([v_fl, v_fr], self.target_height +30.0):
+                    self.current_state = State.DOWN_2_FRONT_HOVER_LAND
             
         elif state == State.DOWN_2_FRONT_HOVER_LAND:
             self._creep_forward()
-            pe_front_hover = (self._get_v_pe(v_fl) == 0) # 前轮光电开关无遮挡，表示前轮悬空放下前轮
-            if pe_front_hover:
-                self._set_v_wheel_height([v_fl, v_fr], self.target_height + 30.0)
-                if self.check_height_reached([v_fl, v_fr], self.target_height +30.0):
-                    self.current_state = State.DOWN_3_REAR_HOVER_LAND
+            if self._get_v_pe(v_rr) == 0:
+                self._set_v_wheel_height([v_rl, v_rr], self.target_height +30.0) #放下后轮
+            if self.check_height_reached([v_rl, v_rr], self.target_height + 30.0):
+                self.current_state = State.DOWN_3_REAR_HOVER_LAND
                     
         elif state == State.DOWN_3_REAR_HOVER_LAND:
             self._creep_forward()
-            pe_rear_hover = (self._get_v_pe(v_rr) == 0) #后轮光电开关无遮挡，表示后轮悬空放下后轮
-            if pe_rear_hover:
-                self.current_state = State.DOWN_4_LAND
-                    
-        elif state == State.DOWN_4_LAND:
-            self._stop_chassis()
-            self._set_v_wheel_height([v_rl, v_rr], self.target_height +30.0) #放下后轮
-            if self.check_height_reached([v_rl, v_rr], self.target_height + 30.0):
-                self._creep_forward()
-                if self._get_v_distance(3) > 200.0:
-                    self.current_state = State.DOWN_5_RECOVER
-
-        elif state == State.DOWN_5_RECOVER:
-            self._stop_chassis()
-            self.wheel_heights_target = [self.H_INIT] * 4
-            if self.check_height_reached([v_fl, v_fr, v_rl, v_rr], self.H_INIT):
-                self.get_logger().info("Down step sequence complete.")
+            if self._get_v_distance(3) > 200.0:
+                self.wheel_heights_target = [self.H_INIT] * 4
                 self.current_state = State.IDLE
+                    
+       
 
     def _stop_chassis(self):
         """强制速度为0"""
