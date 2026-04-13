@@ -230,23 +230,17 @@ class SuspensionController(Node):
         elif state == State.UP_1_PREPARE:
             self.target_height = self.H_LIFT_LOW
             self.wheel_heights_target = [self.target_height] * 4
-            if self._get_v_distance(0) > 200: #已经到200
-                if self._get_v_distance(1) < 200: #还有遮挡，是400
-                    self.target_height = self.H_LIFT_HIGH
-                    self.wheel_heights_target = [self.target_height] * 4
-                    
-                    self.current_state = State.UP_2_LIFT
-                elif self._get_v_distance(1) > 200: #无遮挡，是200
-                    self.target_height = self.H_LIFT_LOW
-                    self.wheel_heights_target = [self.target_height] * 4
-                    
-                    self.current_state = State.UP_2_LIFT
+            if self.check_height_reached([v_fl, v_fr, v_rl, v_rr], self.target_height):
+                self.current_state = State.UP_2_LIFT
 
         elif state == State.UP_2_LIFT:
-            # 整体升起，速度强制为 0
             self._stop_chassis()
-            self.wheel_heights_target = [self.target_height] * 4
-            if self.check_height_reached([v_fl, v_fr, v_rl, v_rr], self.target_height):
+            if self._get_v_distance(1) < 200:
+                self.target_height = self.H_LIFT_HIGH
+                self.wheel_heights_target = [self.target_height] * 4
+                if self.check_height_reached([v_fl, v_fr, v_rl, v_rr], self.target_height):
+                    self.current_state = State.UP_3_FRONT_DOCK
+            else:
                 self.current_state = State.UP_3_FRONT_DOCK
 
         elif state == State.UP_3_FRONT_DOCK:
