@@ -23,6 +23,7 @@ class State(Enum):
     DOWN_1_PREPARE = 20
     DOWN_2_FRONT_HOVER_LAND = 21
     DOWN_3_REAR_HOVER_LAND = 22
+    DOWN_4_RECOVERY = 23
     
 
 class Direction(Enum):
@@ -326,6 +327,12 @@ class SuspensionController(Node):
             self._creep_forward()
             if self._get_v_distance(3) > 200.0:
                 self.wheel_heights_target = [self.H_INIT] * 4
+                self.current_state = State.DOWN_4_RECOVERY
+
+        elif state == State.DOWN_4_RECOVERY:
+            self._creep_forward()
+            if self.check_height_reached([v_fl, v_fr, v_rl, v_rr], self.H_INIT):
+                self.get_logger().info("Down step sequence complete.")
                 self.current_state = State.IDLE
                     
        
