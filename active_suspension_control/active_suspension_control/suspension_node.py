@@ -245,7 +245,7 @@ class SuspensionController(Node):
     def execute_state_machine(self, v_0, v_1, v_2, v_3):
         """核心状态机 (全面加入 50ms 逻辑防抖)"""
         state = self.current_state
-     
+        prev_state = self.current_state
         self.chassis_cmd_vel.linear.x = self.raw_cmd_vel.linear.x
         self.chassis_cmd_vel.linear.y = self.raw_cmd_vel.linear.y
         self.chassis_cmd_vel.angular.z = self.raw_cmd_vel.angular.z
@@ -395,7 +395,8 @@ class SuspensionController(Node):
                 self.get_logger().info("Down step sequence complete.")
                 self.current_state = State.IDLE
                     
-       
+        if self.current_state != prev_state:
+            self._stable_counters.clear()
 
     def _stop_chassis(self):
         """强制速度为0"""
