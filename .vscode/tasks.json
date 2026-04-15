@@ -26,7 +26,7 @@
         {
             "label": "tx",
             "type": "shell",
-            "command": "ros2 topic echo t0x0101_wheel_heights",
+            "command": "ros2 topic echo t0x0101_action",
             "presentation": {
                 "group": "ros-group",
                 "panel": "new", // 强制开启新终端

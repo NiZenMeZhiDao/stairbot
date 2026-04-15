@@ -37,7 +37,7 @@ class SuspensionController(Node):
         super().__init__('suspension_controller')
         
         # --- 参数配置 ---
-        self.H_LIFT_LOW = 200.0   # 台阶高度1
+        self.H_LIFT_LOW = 205.0   # 台阶高度1
         self.H_LIFT_HIGH = 400.0  # 台阶高度2
         self.H_INIT = 30.0        # 初始/常规运动姿态高度
         self.CREEP_SPEED = 0.2   # 安全蠕行速度 (m/s)
@@ -62,7 +62,7 @@ class SuspensionController(Node):
         self.raw_cmd_vel = Twist()
         self.distances_raw = [0.0] * 8
         self.pe_switches_raw = [0] * 4
-        self.wheel_heights_current = [0.0] * 4  # [FL, FR, RL, RR]
+        self.wheel_heights_current = [0.0] * 4  # [0, 1, 2, 3]
         
         # 滤波后状态
         self.distance_filtered = [0.0] * 8
@@ -73,7 +73,7 @@ class SuspensionController(Node):
         self.chassis_cmd_vel = Twist()
         self.v_distances_idx = [0.0] * 6
 
-        # 虚拟层状态 (根据方向映射后的 前左, 前右, 后左, 后右)
+        # 虚拟层状态 (根据方向映射后的 0, 1, 2, 3)
         self.v_wheels_idx = [0, 1, 2, 3] 
         self.v_pe_idx = [0, 1, 2, 3]
 
@@ -82,6 +82,13 @@ class SuspensionController(Node):
         self.pe_debounce_counters = [0] * 4  # 用于 10ms 防抖 (主频 100Hz 下 1 帧 = 10ms)
         self.pe_last_states = [0] * 4
         
+        # 初始化高度锁存标志位
+        self._height_latched = False
+        
+        # 状态机通用防抖计数器字典
+        # key 为逻辑判断的唯一标识(字符串)，value 为连续触发的次数
+        self._stable_counters = collections.defaultdict(int)
+
         # --- ROS 2 接口 ---
         self.sub_direction = self.create_subscription(Int32, 'direction', self.direction_cb, 10)
         self.sub_cmd_vel = self.create_subscription(Twist, 'cmd_vel', self.cmd_vel_cb, 10)
@@ -99,6 +106,29 @@ class SuspensionController(Node):
     def start_control_loop(self):
         self.delay_timer.cancel()
         self.timer = self.create_timer(0.01, self.control_loop)
+
+    def _is_stable(self, condition, key, threshold=5):
+        """
+        通用状态防抖判断函数
+        :param condition: 当前帧的布尔条件
+        :param key: 计数器的唯一标识符
+        :param threshold: 需要连续满足的次数，默认 5 次 (主频 100Hz 下 = 50ms)
+        :return: bool，是否稳定满足
+        """
+        if condition:
+            # 只有还没达到阈值时才累加，防止长时间停留在某状态导致整数溢出
+            if self._stable_counters[key] < threshold:
+                self._stable_counters[key] += 1
+                
+            # 达到阈值后，只要 condition 依然为真，就一直返回 True
+            if self._stable_counters[key] >= threshold:
+                return True
+        else:
+            # 只要有一次不满足（即使之前满足了），立刻清零
+            self._stable_counters[key] = 0
+            
+        return False
+
 
     def direction_cb(self, msg):
         if self.current_state != State.IDLE:
@@ -141,14 +171,14 @@ class SuspensionController(Node):
                 self.distance_filtered[i] = sum(self.distance_buffers[i]) / len(self.distance_buffers[i])
 
     def hw_status_cb(self, msg):
-        # r0x0201: [PE_0, PE_1, PE_2, PE_3, H_FL, H_FR, H_RL, H_RR]
+        # r0x0201: [PE_0, PE_1, PE_2, PE_3, H_0, H_1, H_2, H_3]
         if len(msg.data) >= 8:
             for i in range(4):
                 current_pe = int(msg.data[i])
                 # 10ms (1 frame) 防抖逻辑
                 if current_pe != self.pe_last_states[i]:
                     self.pe_debounce_counters[i] += 1
-                    if self.pe_debounce_counters[i] >= 5: # 连续1次跳变(10ms)确认
+                    if self.pe_debounce_counters[i] >= 2: # 连续1次跳变(10ms)确认
                         self.pe_switches_filtered[i] = current_pe
                         self.pe_last_states[i] = current_pe
                         self.pe_debounce_counters[i] = 0
@@ -167,13 +197,14 @@ class SuspensionController(Node):
                     self.current_direction = Direction.LEFT
                 else:
                     self.current_direction = Direction.FORWARD        
+
     # ================= 核心映射与控制 =================
     def update_virtual_mapping(self):
-        """根据行驶方向，将物理轮/传感器映射为虚拟的 前左(VFL), 前右(VFR), 后左(VRL), 后右(VRR)"""
+        """根据行驶方向，将物理轮/传感器映射为虚拟的 0, 1, 2, 3"""
         if self.current_direction == Direction.FORWARD:
-            self.v_wheels_idx = [2, 1, 0, 3] # [FL, FR, RL, RR]
-            self.v_pe_idx = [0, 1, 3, 2]     # 假设 0,1为前，2,3为后
-            self.v_distances_idx = [0, 1, 5, 4] # 前后距离传感器不变
+            self.v_wheels_idx = [2, 1, 0, 3] # [0, 1, 2, 3]
+            self.v_pe_idx = [0, 1, 3, 2]     
+            self.v_distances_idx = [0, 1, 5, 4] 
         elif self.current_direction == Direction.LEFT:
             self.v_wheels_idx = [0, 2, 3, 1] 
             self.v_pe_idx = [1, 2, 0, 3]     
@@ -195,9 +226,9 @@ class SuspensionController(Node):
     def control_loop(self):
         self.update_virtual_mapping()
         
-        v_fl, v_fr, v_rl, v_rr = 0, 1, 2, 3 
+        v_0, v_1, v_2, v_3 = 0, 1, 2, 3 
 
-        self.execute_state_machine(v_fl, v_fr, v_rl, v_rr)
+        self.execute_state_machine(v_0, v_1, v_2, v_3)
         self.yaw_correction()  
 
         msg = []
@@ -211,8 +242,8 @@ class SuspensionController(Node):
         state_msg = Int32(data=self.current_state.value)
         self.pub_state.publish(state_msg)
 
-    def execute_state_machine(self, v_fl, v_fr, v_rl, v_rr):
-        """核心状态机"""
+    def execute_state_machine(self, v_0, v_1, v_2, v_3):
+        """核心状态机 (全面加入 50ms 逻辑防抖)"""
         state = self.current_state
      
         self.chassis_cmd_vel.linear.x = self.raw_cmd_vel.linear.x
@@ -220,112 +251,147 @@ class SuspensionController(Node):
         self.chassis_cmd_vel.angular.z = self.raw_cmd_vel.angular.z
 
         if state == State.IDLE:
-            front_dist = self._get_v_distance(1)
-            if front_dist < 200:  # 前方有台阶，准备上台阶
+           
+            self._stable_counters.clear() 
+            
+            cond_up = self._get_v_distance(1) < 200
+            cond_down = self._get_v_distance(0) > 200
+            
+            if self._is_stable(cond_up, 'idle_to_up'):  
                 self.current_state = State.UP_1_PREPARE
-            if self._get_v_distance(0) > 200:
+            elif self._is_stable(cond_down, 'idle_to_down'):
                 self.current_state = State.DOWN_1_PREPARE
 
-        
+        # ================= 上台阶逻辑 =================
         elif state == State.UP_1_PREPARE:
             self.target_height = self.H_LIFT_LOW
             self.wheel_heights_target = [self.target_height] * 4
-            if self.check_height_reached([v_fl, v_fr, v_rl, v_rr], self.target_height):
+            cond_height = self.check_height_reached([v_0, v_1, v_2, v_3], self.target_height)
+            if self._is_stable(cond_height, 'up1_height', threshold=2):
                 self.current_state = State.UP_2_LIFT
 
         elif state == State.UP_2_LIFT:
             self._stop_chassis()
-            if self._get_v_distance(1) < 200:
+            cond_high_dist = self._get_v_distance(1) < 200
+            
+            # 分支 1：确实是高台阶，继续升
+            if self._is_stable(cond_high_dist, 'up2_high_dist'):
                 self.target_height = self.H_LIFT_HIGH
                 self.wheel_heights_target = [self.target_height] * 4
-                if self.check_height_reached([v_fl, v_fr, v_rl, v_rr], self.target_height):
+                cond_height = self.check_height_reached([v_0, v_1, v_2, v_3], self.target_height)
+                if self._is_stable(cond_height, 'up2_height', threshold=2):
                     self.current_state = State.UP_3_FRONT_DOCK
-            else:
+            # 分支 2：并非高台阶，防抖确认后直接进入搭接阶段
+            elif self._is_stable(not cond_high_dist, 'up2_low_dist'):
                 self.current_state = State.UP_3_FRONT_DOCK
 
         elif state == State.UP_3_FRONT_DOCK:
-            # 前轮搭接：钳位速度为安全蠕行速度
             self._creep_forward()
-            # 检查前置向下测距 (假设索引1代表前从动轮测距)
-            if self._get_v_distance(0) < 80.0:  # 已经稳稳搭在平台上
+            cond_dist = self._get_v_distance(0) < 80.0
+            if self._is_stable(cond_dist, 'up3_dist'):  
                 self.current_state = State.UP_4_RETRACT_FRONT
 
         elif state == State.UP_4_RETRACT_FRONT:
-            # 收起前主动轮，等待电机到位
             self._stop_chassis()
-            self._set_v_wheel_height([v_fl, v_fr], 5.0) # 0为与从动轮齐平
-            self.current_state = State.UP_5_FRONT_LAND
+            self._set_v_wheel_height([v_0, v_1], 1.0) 
+            cond_height = self.check_height_reached([v_0, v_1], 1.0)
+            if self._is_stable(cond_height, 'up4_height', threshold=2):
+                self.current_state = State.UP_5_FRONT_LAND
 
         elif state == State.UP_5_FRONT_LAND:
             self._creep_forward()
-            # 检查虚拟前轮的下视光电开关 (有遮挡表示处于平台上空)
-            pe_front_clear = (self._get_v_pe(v_fl) == 1) #1有遮挡
-            if pe_front_clear:
-                self._set_v_wheel_height([v_fl, v_fr], 5.0) # 降下前主动轮
-                self._set_v_wheel_height([v_rl, v_rr], self.target_height + 5.0) 
-                self.current_state = State.UP_6_SIDE_DOCK_RETRACT_REAR
+           
+            cond_pe = (self._get_v_pe(v_0) == 1 )
+            
+            if self._is_stable(cond_pe, 'up5_pe'):
+                self._stop_chassis() 
+                self._set_v_wheel_height([v_0, v_1], 3.0) 
+                self._set_v_wheel_height([v_2, v_3], self.target_height + 3.0) 
+                
+                cond_height = self.check_height_reached([v_2, v_3], self.target_height + 3.0)
+                if self._is_stable(cond_height, 'up5_height', threshold=2):
+                    self.current_state = State.UP_6_SIDE_DOCK_RETRACT_REAR
 
         elif state == State.UP_6_SIDE_DOCK_RETRACT_REAR:
             self._creep_forward()
-            # 假设后轮前方光电开关被遮挡，表明车体中部搭上
-            # 此时立即收起后轮
-            if not hasattr(self, '_up6_delay_counter'):
-                self._up6_delay_counter = 0
-            if self._get_v_pe(v_rl) == 1: 
-                self._up6_delay_counter += 1  # 开始累加 (1次 = 10ms)
-                # 设定延迟阈值，例如 10 帧 = 0.1 秒
-                if self._up6_delay_counter >= 20: 
-                    self._set_v_wheel_height([v_rl, v_rr], 0.0)
-                    
-                    if self.check_height_reached([v_rl, v_rr], 0.0):
-                        self._up6_delay_counter = 0  # 状态切换前清零，避免影响下一次爬楼
-                        self.current_state = State.UP_7_REAR_LAND
-            else:
-                # 信号消失则重置计数器（防抖/防误触）
-                self._up6_delay_counter = 0
+            cond_pe = (self._get_v_pe(v_2) == 1 and self._get_v_pe(v_3) == 1) 
+            if self._is_stable(cond_pe, 'up6_pe', threshold=20): 
+                self._stop_chassis() 
+                self._set_v_wheel_height([v_2, v_3], 0.0)
+                
+                cond_height = self.check_height_reached([v_2, v_3], 0.0)
+                if self._is_stable(cond_height, 'up6_height', threshold=2):
+                    self.current_state = State.UP_7_REAR_LAND
 
         elif state == State.UP_7_REAR_LAND:
             self._creep_forward()
-            if self._get_v_pe(v_rr) == 1: # 后轮光电被遮挡
-                self._set_v_wheel_height([v_rl, v_rr], 5.0)
-                if self.check_height_reached([v_rl, v_rr], 5.0):
+            cond_pe = (self._get_v_pe(v_2) == 1 and self._get_v_pe(v_3) == 1) 
+            
+            if self._is_stable(cond_pe, 'up7_pe'):
+                self._set_v_wheel_height([v_2, v_3], 3.0)
+                cond_height = self.check_height_reached([v_2, v_3], 3.0)
+                if self._is_stable(cond_height, 'up7_height', threshold=2):
                     self.current_state = State.UP_8_RECOVER
 
         elif state == State.UP_8_RECOVER:
             self._stop_chassis()
-            self.wheel_heights_target = [self.H_INIT] * 4 # 恢复常规行驶姿态
-            if self.check_height_reached([v_fl, v_fr, v_rl, v_rr], self.H_INIT):
+            self.wheel_heights_target = [self.H_INIT] * 4 
+            cond_height = self.check_height_reached([v_0, v_1, v_2, v_3], self.H_INIT)
+            if self._is_stable(cond_height, 'up8_height', threshold=2):
                 self.get_logger().info("Up step sequence complete.")
                 self.current_state = State.IDLE
 
         # ================= 下台阶逻辑 =================
         elif state == State.DOWN_1_PREPARE:
-            self._creep_forward()
-            if self._get_v_pe(v_fl) == 0: #前轮光电开关无遮挡，表示前轮悬空
-                if self._get_v_distance(0) > 380: #检测200还是400
-                    self.target_height = self.H_LIFT_HIGH # 反向高度
-                elif self._get_v_distance(0) > 180:
-                    self.target_height = self.H_LIFT_LOW
-                self._set_v_wheel_height([v_fl, v_fr], self.target_height + 30.0)
-                if self.check_height_reached([v_fl, v_fr], self.target_height +30.0):
+            cond_pe = self._get_v_pe(v_0) == 0
+            
+            if self._is_stable(cond_pe, 'down1_pe'): 
+                self._stop_chassis() 
+                
+                if not self._height_latched:
+                    dist = self._get_v_distance(0)
+                    if dist > 380: 
+                        self.target_height = self.H_LIFT_HIGH 
+                    elif dist > 180:
+                        self.target_height = self.H_LIFT_LOW
+                    else:
+                        self.target_height = self.H_LIFT_LOW 
+                    self._height_latched = True
+                    
+                self._set_v_wheel_height([v_0, v_1], self.target_height + 30.0)
+                
+                cond_height = self.check_height_reached([v_0, v_1], self.target_height + 30.0)
+                if self._is_stable(cond_height, 'down1_height', threshold=2):
+                    self._height_latched = False 
                     self.current_state = State.DOWN_2_FRONT_HOVER_LAND
+            else:
+                self._creep_forward() 
             
         elif state == State.DOWN_2_FRONT_HOVER_LAND:
             self._creep_forward()
-            if self._get_v_pe(v_rr) == 0:
-                self._set_v_wheel_height([v_rl, v_rr], self.target_height +30.0) #放下后轮
-            if self.check_height_reached([v_rl, v_rr], self.target_height + 30.0):
-                self.current_state = State.DOWN_3_REAR_HOVER_LAND
+            cond_pe = self._get_v_pe(v_3) == 0
+            
+            if self._is_stable(cond_pe, 'down2_pe'):
+                self._stop_chassis() 
+                self._set_v_wheel_height([v_2, v_3], self.target_height + 30.0)
+                
+                cond_height = self.check_height_reached([v_2, v_3], self.target_height + 30.0)
+                if self._is_stable(cond_height, 'down2_height', threshold=2):
+                    self.current_state = State.DOWN_3_REAR_HOVER_LAND
                     
         elif state == State.DOWN_3_REAR_HOVER_LAND:
             self._creep_forward()
-            if self._get_v_distance(3) > 200.0:
+            cond_dist = self._get_v_distance(3) > 200.0
+            
+            if self._is_stable(cond_dist, 'down3_dist'):
                 self.wheel_heights_target = [self.H_INIT] * 4
                 self.current_state = State.DOWN_4_RECOVERY
 
         elif state == State.DOWN_4_RECOVERY:
             self._creep_forward()
-            if self.check_height_reached([v_fl, v_fr, v_rl, v_rr], self.H_INIT):
+            cond_height = self.check_height_reached([v_0, v_1, v_2, v_3], self.H_INIT)
+            
+            if self._is_stable(cond_height, 'down4_height', threshold=2):
                 self.get_logger().info("Down step sequence complete.")
                 self.current_state = State.IDLE
                     
