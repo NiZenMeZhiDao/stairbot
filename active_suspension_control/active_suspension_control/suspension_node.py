@@ -252,7 +252,7 @@ class SuspensionController(Node):
 
         if state == State.IDLE:
            
-            self._stable_counters.clear() 
+            
             
             cond_up = self._get_v_distance(1) < 200
             cond_down = self._get_v_distance(0) > 200
