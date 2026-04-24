@@ -184,7 +184,7 @@ class SuspensionController(Node):
     def yaw_correction(self):
         if not self.yaw_correction_enabled or not self.has_imu_yaw:
             return 0.0
-        yaw_error = self.target_yaw - self.current_yaw
+        yaw_error = self.normalize_angle(self.target_yaw - self.current_yaw)
         if abs(yaw_error) < self.YAW_TOLERANCE:
             self.chassis_cmd_vel.angular.z = 0.0
             return 0.0
