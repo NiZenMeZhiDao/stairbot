@@ -2,7 +2,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Float32, Float32MultiArray, Int32
+from std_msgs.msg import Float32MultiArray, Int32
 import math
 from enum import Enum
 import collections
@@ -55,12 +55,8 @@ class SuspensionController(Node):
         self.YAW_TOLERANCE = 0.05 
         self.MAX_ANGULAR_VEL = 0.5 
         self.current_yaw = 0.0
-        self.current_yaw_raw = 0.0
-        self.startup_yaw = 0.0
-        self.target_yaw = 0.0
-        self.target_yaw_deg = 0.0
+        self.target_yaw = 0.0   
         self.yaw_correction_enabled = True 
-        self.has_imu_yaw = False
 
         # 物理层状态
         self.raw_cmd_vel = Twist()
@@ -99,7 +95,6 @@ class SuspensionController(Node):
         self.sub_sensor_dist = self.create_subscription(Float32MultiArray, 'sensor_distances', self.dist_cb, 10)
         self.sub_r0x0201 = self.create_subscription(Float32MultiArray, 'r0x0201', self.hw_status_cb, 10)
         self.sub_imu = self.create_subscription(Imu, 'imu/data', self.imu_cb, 10)
-        self.sub_target_yaw = self.create_subscription(Float32, 'target_yaw_deg', self.target_yaw_cb, 10)
 
         self.pub_action = self.create_publisher(Float32MultiArray, 't0x0101_action', 10)
         self.pub_chassis_vel = self.create_publisher(Twist, 'cmd_vel_chassis', 10) # 实际下发到底盘的速度
@@ -152,35 +147,18 @@ class SuspensionController(Node):
         qy = msg.orientation.y
         qz = msg.orientation.z
         qw = msg.orientation.w
-        yaw_raw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
-        self.current_yaw_raw = self.normalize_angle(yaw_raw)
-
-        if not self.has_imu_yaw:
-            self.startup_yaw = self.current_yaw_raw
-            self.has_imu_yaw = True
-            self.get_logger().info(
-                f"Yaw zero locked at startup IMU heading: {math.degrees(self.startup_yaw):.2f} deg"
-            )
-
-        self.current_yaw = self.normalize_angle(self.current_yaw_raw - self.startup_yaw)
-
-    def target_yaw_cb(self, msg):
-        self.target_yaw_deg = float(msg.data)
-        self.target_yaw = self.normalize_angle(math.radians(self.target_yaw_deg))
-        self.get_logger().info(f"Target yaw updated to {self.target_yaw_deg:.2f} deg")
+        self.current_yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
 
     def yaw_correction(self):
-        if not self.yaw_correction_enabled or not self.has_imu_yaw:
+        if not self.yaw_correction_enabled:
             return 0.0
         yaw_error = self.normalize_angle(self.target_yaw - self.current_yaw)
         if abs(yaw_error) < self.YAW_TOLERANCE:
-            self.chassis_cmd_vel.angular.z = 0.0
             return 0.0
         angular_correction = self.YAW_KP * yaw_error
         angular_correction = max(-self.MAX_ANGULAR_VEL, 
                                 min(self.MAX_ANGULAR_VEL, angular_correction))
         self.chassis_cmd_vel.angular.z = angular_correction
-        return angular_correction
 
         
     def cmd_vel_cb(self, msg):
@@ -194,7 +172,7 @@ class SuspensionController(Node):
 
     def hw_status_cb(self, msg):
         # r0x0201: [PE_0, PE_1, PE_2, PE_3, H_0, H_1, H_2, H_3]
-        if len(msg.data) >= 12:
+        if len(msg.data) >= 8:
             for i in range(4):
                 current_pe = int(msg.data[i])
                 # 10ms (1 frame) 防抖逻辑
@@ -212,13 +190,13 @@ class SuspensionController(Node):
             self.raw_cmd_vel.linear.x = msg.data[8]  
             self.raw_cmd_vel.linear.y = msg.data[9]
             self.raw_cmd_vel.angular.z = msg.data[10]
-            if self.current_state == State.IDLE and self.control_by_sbus:
-                if msg.data[11] > 0:
+            if (self.current_state == State.IDLE) & (self.control_by_sbus):
+                if(msg.data[11] > 0):
                     self.current_direction = Direction.RIGHT
-                elif msg.data[11] < 0:
+                elif(msg.data[11] < 0):
                     self.current_direction = Direction.LEFT
                 else:
-                    self.current_direction = Direction.FORWARD
+                    self.current_direction = Direction.FORWARD        
 
     # ================= 核心映射与控制 =================
     def update_virtual_mapping(self):

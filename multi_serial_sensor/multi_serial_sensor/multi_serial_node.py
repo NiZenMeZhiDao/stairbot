@@ -6,6 +6,7 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 import serial
 import math
+import time
 
 class MultiSerialPublisher(Node):
     def __init__(self):
@@ -25,17 +26,29 @@ class MultiSerialPublisher(Node):
         self.buffers = [bytearray() for _ in range(8)]
         self.last_distances = [math.nan] * 8  # 缓存上一次的有效数据，默认全为 NaN
         self.miss_counts = [0] * 8  # 记录每个串口连续未读取到有效数据的次数
+        self.last_reconnect_attempt = [0.0] * 8
+        self.reconnect_interval = 1.0
         
         # 初始化 8 个串口
-        for port in self.port_names:
-            try:
-                # 【关键】timeout=0 设置为非阻塞模式，保证 100Hz 定时器不被卡死
-                ser = serial.Serial(port, self.baudrate, timeout=0)
-                self.serials.append(ser)
-                self.get_logger().info(f'成功打开串口: {port}')
-            except serial.SerialException:
-                self.serials.append(None)
-                self.get_logger().warn(f'未连接设备或无法打开: {port}')
+        for i in range(len(self.port_names)):
+            self.serials.append(None)
+            self._try_open_serial(i, force=True)
+
+    def _try_open_serial(self, index, force=False):
+        now = time.monotonic()
+        if not force and now - self.last_reconnect_attempt[index] < self.reconnect_interval:
+            return
+
+        self.last_reconnect_attempt[index] = now
+        port = self.port_names[index]
+        try:
+            # timeout=0 设置为非阻塞模式，保证 100Hz 定时器不被卡死
+            self.serials[index] = serial.Serial(port, self.baudrate, timeout=0)
+            self.buffers[index].clear()
+            self.miss_counts[index] = 0
+            self.get_logger().info(f'成功打开串口: {port}')
+        except serial.SerialException:
+            self.serials[index] = None
 
     def parse_packet(self, data):
         """解析单帧 195 字节的数据包，寻找自信度为 100 的测量点"""
@@ -98,10 +111,13 @@ class MultiSerialPublisher(Node):
                     self.get_logger().error(f'读取串口 {self.port_names[i]} 失败，设备可能已拔出: {e}')
                     self.serials[i].close()
                     self.serials[i] = None
+                    self.buffers[i].clear()
+                    self.miss_counts[i] = 0
                     self.last_distances[i] = math.nan  # 断开连接时赋值 NaN
             else:
                 # 串口未连接，直接赋值 NaN
                 self.last_distances[i] = math.nan
+                self._try_open_serial(i)
         
         # 将包含 8 个数据的数组装填入 msg 并发布
         msg.data = self.last_distances

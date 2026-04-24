@@ -1,14 +1,16 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>multi_serial_sensor</name>
+  <name>wit_ros2_imu</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="12313401@mail.sustech.edu.cn">xiexiang</maintainer>
+  <maintainer email="bgzerol@todo.todo">bgzerol</maintainer>
   <license>TODO: License declaration</license>
 
   <depend>rclpy</depend>
-  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>imu_msg</depend>
+  <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-serial</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
