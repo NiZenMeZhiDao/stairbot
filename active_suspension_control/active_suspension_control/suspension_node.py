@@ -6,7 +6,7 @@ from std_msgs.msg import Float32, Float32MultiArray, Int32
 import math
 from enum import Enum
 import collections
-from sensor_msgs.msg import Imu
+from imu_msg.msg import ImuData
 
 # 定义系统状态机
 class State(Enum):
@@ -98,7 +98,7 @@ class SuspensionController(Node):
         self.sub_cmd_vel = self.create_subscription(Twist, 'cmd_vel', self.cmd_vel_cb, 10)
         self.sub_sensor_dist = self.create_subscription(Float32MultiArray, 'sensor_distances', self.dist_cb, 10)
         self.sub_r0x0201 = self.create_subscription(Float32MultiArray, 'r0x0201', self.hw_status_cb, 10)
-        self.sub_imu = self.create_subscription(Imu, 'imu/data', self.imu_cb, 10)
+        self.sub_imu = self.create_subscription(ImuData, 'imu/ImuDataWithRPY', self.imu_cb, 10)
         self.sub_target_yaw = self.create_subscription(Float32, 'target_yaw_deg', self.target_yaw_cb, 10)
 
         self.pub_action = self.create_publisher(Float32MultiArray, 't0x0101_action', 10)
@@ -148,12 +148,8 @@ class SuspensionController(Node):
             self.current_direction = Direction.RIGHT
         
     def imu_cb(self, msg):
-        qx = msg.orientation.x
-        qy = msg.orientation.y
-        qz = msg.orientation.z
-        qw = msg.orientation.w
-        yaw_raw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
-        self.current_yaw_raw = self.normalize_angle(yaw_raw)
+        yaw_raw_deg = float(msg.yaw)
+        self.current_yaw_raw = self.normalize_angle(math.radians(yaw_raw_deg))
 
         if not self.has_imu_yaw:
             self.startup_yaw = self.current_yaw_raw
