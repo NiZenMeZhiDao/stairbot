@@ -51,19 +51,13 @@ class SuspensionController(Node):
         self.current_direction = Direction.FORWARD
         self.is_reversing = False
 
-        self.YAW_KP = 1.0 
-        self.YAW_KD = 0.12
-        self.YAW_TOLERANCE = 0.05 
-        self.MAX_ANGULAR_VEL = 1.0 
+        self.YAW_KP = 1.0
+        self.YAW_TOLERANCE = 0.05
+        self.MAX_ANGULAR_VEL = 1.0
         self.current_yaw = 0.0
-        self.current_yaw_raw = 0.0
-        self.current_yaw_rate = 0.0
-        self.current_yaw_unwrapped = 0.0
-        self.last_imu_yaw_deg = None
-        self.startup_yaw = 0.0
+        self.yaw_zero = 0.0
         self.target_yaw = 0.0
-        self.target_yaw_deg = 0.0
-        self.yaw_correction_enabled = True 
+        self.yaw_correction_enabled = True
         self.has_imu_yaw = False
 
         # 物理层状态
@@ -152,34 +146,20 @@ class SuspensionController(Node):
             self.current_direction = Direction.RIGHT
         
     def imu_cb(self, msg):
-        yaw_raw_deg = float(msg.yaw)
-        self.current_yaw_rate = float(msg.imu.angular_velocity.z)
-        self.current_yaw_raw = math.radians(yaw_raw_deg)
-
-        if self.last_imu_yaw_deg is None:
-            self.current_yaw_unwrapped = yaw_raw_deg
-        else:
-            delta_deg = yaw_raw_deg - self.last_imu_yaw_deg
-            if delta_deg > 180.0:
-                delta_deg -= 360.0
-            elif delta_deg < -180.0:
-                delta_deg += 360.0
-            self.current_yaw_unwrapped += delta_deg
-        self.last_imu_yaw_deg = yaw_raw_deg
-
+        yaw = math.radians(float(msg.yaw))
         if not self.has_imu_yaw:
-            self.startup_yaw = self.current_yaw_unwrapped
+            self.yaw_zero = yaw
             self.has_imu_yaw = True
+            self.target_yaw = 0.0
             self.get_logger().info(
-                f"Yaw zero locked at startup IMU heading: {self.startup_yaw:.2f} deg"
+                f"Yaw zero locked at startup IMU heading: {math.degrees(self.yaw_zero):.2f} deg"
             )
-
-        self.current_yaw = math.radians(self.current_yaw_unwrapped - self.startup_yaw)
+        self.current_yaw = self.normalize_angle(yaw - self.yaw_zero)
 
     def target_yaw_cb(self, msg):
-        self.target_yaw_deg = float(msg.data)
-        self.target_yaw = math.radians(self.target_yaw_deg)
-        self.get_logger().info(f"Target yaw updated to {self.target_yaw_deg:.2f} deg")
+        target_yaw_deg = float(msg.data)
+        self.target_yaw = self.normalize_angle(math.radians(target_yaw_deg))
+        self.get_logger().info(f"Target yaw updated to {target_yaw_deg:.2f} deg")
 
     def yaw_correction(self):
         if not self.yaw_correction_enabled or not self.has_imu_yaw:
@@ -188,9 +168,11 @@ class SuspensionController(Node):
         if abs(yaw_error) < self.YAW_TOLERANCE:
             self.chassis_cmd_vel.angular.z = 0.0
             return 0.0
-        angular_correction = self.YAW_KP * yaw_error - self.YAW_KD * self.current_yaw_rate
-        angular_correction = max(-self.MAX_ANGULAR_VEL, 
-                                min(self.MAX_ANGULAR_VEL, angular_correction))
+        angular_correction = self.YAW_KP * yaw_error
+        angular_correction = max(
+            -self.MAX_ANGULAR_VEL,
+            min(self.MAX_ANGULAR_VEL, angular_correction),
+        )
         self.chassis_cmd_vel.angular.z = angular_correction
         return angular_correction
 
