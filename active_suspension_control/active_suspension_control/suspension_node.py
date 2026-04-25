@@ -54,7 +54,7 @@ class SuspensionController(Node):
         self.YAW_KP = 1.0
         self.YAW_KD = 0.12
         self.YAW_TOLERANCE = 0.05
-        self.ANGULAR_Z_DEADZONE = 0.15
+        self.ANGULAR_Z_COMPENSATION = 0.15
         self.MAX_ANGULAR_VEL = 1.0
         self.YAW_DEBUG_INTERVAL = 0.2
         self.imu_yaw = 0.0
@@ -206,12 +206,10 @@ class SuspensionController(Node):
         self._log_yaw_debug(yaw_error, angular_correction)
         return angular_correction
 
-    def compensate_angular_z_deadzone(self, angular_z):
+    def compensate_angular_z(self, angular_z):
         if abs(angular_z) < 1e-6:
             return 0.0
-        if abs(angular_z) < self.ANGULAR_Z_DEADZONE:
-            return math.copysign(self.ANGULAR_Z_DEADZONE, angular_z)
-        return angular_z
+        return angular_z + math.copysign(self.ANGULAR_Z_COMPENSATION, angular_z)
 
     def _log_yaw_debug(self, yaw_error, angular_correction):
         now_sec = self.get_clock().now().nanoseconds * 1e-9
@@ -299,7 +297,7 @@ class SuspensionController(Node):
 
         self.execute_state_machine(v_0, v_1, v_2, v_3)
         self.yaw_correction()  
-        self.chassis_cmd_vel.angular.z = self.compensate_angular_z_deadzone(
+        self.chassis_cmd_vel.angular.z = self.compensate_angular_z(
             self.chassis_cmd_vel.angular.z
         )
 
