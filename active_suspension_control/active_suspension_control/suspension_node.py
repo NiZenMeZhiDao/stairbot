@@ -51,11 +51,11 @@ class SuspensionController(Node):
         self.current_direction = Direction.FORWARD
         self.is_reversing = False
 
-        self.YAW_KP = 1.0
-        self.YAW_KD = 0.12
-        self.YAW_TOLERANCE = 0.05
-        self.ANGULAR_Z_COMPENSATION = 0.15
-        self.MAX_ANGULAR_VEL = 1.0
+        self.YAW_KP = 0.02
+        self.YAW_KD = 0.04
+        self.YAW_TOLERANCE = 2.0
+        self.ANGULAR_Z_COMPENSATION = 0.152
+        self.MAX_ANGULAR_VEL = 0.5
         self.YAW_DEBUG_INTERVAL = 0.2
         self.imu_yaw_raw = 0.0
         self.imu_yaw_unwrapped = 0.0
@@ -115,6 +115,12 @@ class SuspensionController(Node):
         # 控制主循环 (100Hz)
         self.delay_timer = self.create_timer(0.2, self.start_control_loop)
         self.get_logger().info("Step Climber Node Initialized.")
+        self.get_logger().info(
+            f"Suspension node code: {__file__} | "
+            f"Kp={self.YAW_KP:.2f} Kd={self.YAW_KD:.2f} "
+            f"tol={math.degrees(self.YAW_TOLERANCE):.1f}deg "
+            f"z_comp={self.ANGULAR_Z_COMPENSATION:.2f} max_z={self.MAX_ANGULAR_VEL:.2f}"
+        )
     
     def start_control_loop(self):
         self.delay_timer.cancel()
