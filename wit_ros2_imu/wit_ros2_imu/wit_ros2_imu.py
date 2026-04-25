@@ -27,11 +27,13 @@ class imuDriverNode(Node):
         self.declare_parameter("baudrate", 115200)
         self.declare_parameter("protocol", "TTL_STD")
         self.declare_parameter("modbusID", 0x50)
+        self.declare_parameter("console_debug", False)
 
         self.port = self.get_parameter("port").value
         self.baudrate = self.get_parameter("baudrate").value
         self.modbusID = self.get_parameter("modbusID").value
         protocolStr = self.get_parameter("protocol").value
+        self.console_debug = bool(self.get_parameter("console_debug").value)
 
         self.protocol = protocolType[protocolStr]
 
@@ -72,7 +74,8 @@ class imuDriverNode(Node):
 
         # 定时器
         self.create_timer(0.001, self.timerCallback)
-        self.create_timer(0.1, self.printMsg)       # 终端打印
+        if self.console_debug:
+            self.create_timer(0.1, self.printMsg)
 
     # ==========================================================
     # 主循环

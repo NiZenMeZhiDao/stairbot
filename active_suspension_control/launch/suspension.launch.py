@@ -13,6 +13,7 @@ def generate_launch_description():
                 'baudrate': 115200,
                 'protocol': 'TTL_STD',
                 'modbusID': 0x50,
+                'console_debug': False,
             }]
         ),
 
