@@ -51,9 +51,9 @@ class SuspensionController(Node):
         self.current_direction = Direction.FORWARD
         self.is_reversing = False
 
-        self.YAW_KP = 0.02
+        self.YAW_KP = 0.025
         self.YAW_KD = 0.04
-        self.YAW_TOLERANCE = 2.0
+        self.YAW_TOLERANCE = 0.05
         self.ANGULAR_Z_COMPENSATION = 0.152
         self.MAX_ANGULAR_VEL = 0.5
         self.YAW_DEBUG_INTERVAL = 0.2
