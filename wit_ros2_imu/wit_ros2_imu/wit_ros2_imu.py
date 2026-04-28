@@ -61,6 +61,7 @@ class imuDriverNode(Node):
         self.angleData = np.zeros(3)
         self.magData = np.zeros(3)
         self.currentRequestAddr = None      # 标记 485 当前询问地址
+        self.has_angle = False
 
         # 处理后的数据
         self.acc = np.zeros(3)
@@ -202,6 +203,7 @@ class imuDriverNode(Node):
                 self.gyroData = np.array(values)
             elif dataType == 0x53:
                 self.angleData = np.array(values)
+                self.has_angle = True
             elif dataType == 0x54:
                 self.magData = np.array(values)
         else:
@@ -230,6 +232,7 @@ class imuDriverNode(Node):
                     self.angleData[1] = angle32
                 elif axis == 0x03:
                     self.angleData[2] = angle32
+                    self.has_angle = True
         
         self.publishImu() 
 
@@ -248,6 +251,7 @@ class imuDriverNode(Node):
                 self.gyroData = np.array(values)
             elif dataType == 0x53:
                 self.angleData = np.array(values)
+                self.has_angle = True
             elif dataType == 0x54:
                 self.magData = np.array(values)
         else:
@@ -276,6 +280,7 @@ class imuDriverNode(Node):
                     self.angleData[1] = angle32
                 elif axis == 0x03:
                     self.angleData[2] = angle32
+                    self.has_angle = True
         
         self.publishImu()
 
@@ -305,6 +310,7 @@ class imuDriverNode(Node):
                 self.magData = np.array(values)
             elif addr == 0x3D:
                 self.angleData = np.array(values)
+                self.has_angle = True
         else:
             if addr == 0x3D:  # 角度
                 if len(data) != 12:
@@ -339,6 +345,7 @@ class imuDriverNode(Node):
                 angleZ = parse32(8)
 
                 self.angleData = np.array([angleX, angleY, angleZ])
+                self.has_angle = True
             else:
                 if len(data) != 6:
                     return
@@ -360,6 +367,8 @@ class imuDriverNode(Node):
     # 发布IMU
     # ==========================================================
     def publishImu(self):
+        if not self.has_angle:
+            return
 
         accScale = 16.0 / 32768.0
         gyroScale = 2000.0 / 32768.0

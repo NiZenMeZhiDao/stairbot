@@ -69,6 +69,7 @@ class SuspensionController(Node):
         self.target_relative_yaw = 0.0
         self.yaw_correction_enabled = True
         self.has_imu_yaw = False
+        self.imu_zero_locked = False
 
         # 物理层状态
         self.raw_cmd_vel = Twist()
@@ -170,13 +171,15 @@ class SuspensionController(Node):
             self.imu_yaw_unwrapped += delta_yaw
         self.last_imu_yaw_raw = self.imu_yaw_raw
 
-        if not self.has_imu_yaw:
+        if not self.imu_zero_locked:
             self.yaw_offset = self.imu_yaw_unwrapped
             self.last_relative_yaw = 0.0
             self.has_imu_yaw = True
+            self.imu_zero_locked = True
             self.target_relative_yaw = 0.0
             self.get_logger().info(
-                f"Yaw relative zero locked with IMU offset: {math.degrees(self.yaw_offset):.2f} deg"
+                "Yaw relative zero locked from first valid IMU angle: "
+                f"offset={math.degrees(self.yaw_offset):.2f} deg"
             )
         relative_yaw = self.imu_yaw_unwrapped - self.yaw_offset
 
