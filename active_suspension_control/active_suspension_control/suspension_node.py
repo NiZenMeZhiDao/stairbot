@@ -43,7 +43,7 @@ class SuspensionController(Node):
         self.CREEP_SPEED = 0.2   # 安全蠕行速度 (m/s)
         self.HEIGHT_TOLERANCE = 20.0 
         
-        self.control_by_sbus = True
+        self.control_by_sbus = False
 
         # --- 状态变量 ---
         self.current_state = State.IDLE
@@ -275,9 +275,7 @@ class SuspensionController(Node):
                     
             for i in range(4):
                 self.wheel_heights_current[i] = msg.data[4 + i]
-            self.raw_cmd_vel.linear.x = msg.data[8]  
-            self.raw_cmd_vel.linear.y = msg.data[9]
-            self.raw_cmd_vel.angular.z = msg.data[10]
+            
             if self.current_state == State.IDLE and self.control_by_sbus:
                 if msg.data[11] > 0:
                     self.current_direction = Direction.RIGHT
@@ -285,6 +283,9 @@ class SuspensionController(Node):
                     self.current_direction = Direction.LEFT
                 else:
                     self.current_direction = Direction.FORWARD
+                self.raw_cmd_vel.linear.x = msg.data[8]  
+                self.raw_cmd_vel.linear.y = msg.data[9]
+                self.raw_cmd_vel.angular.z = msg.data[10]
 
     # ================= 核心映射与控制 =================
     def update_virtual_mapping(self):
