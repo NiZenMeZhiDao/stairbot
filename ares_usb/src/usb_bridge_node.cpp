@@ -91,7 +91,7 @@ private:
                 if (passthrough_subs_.find(clean_name) == passthrough_subs_.end())
                 {
                     uint16_t data_id = static_cast<uint16_t>(std::stoul(hex_str, nullptr, 16));
-                    
+                    data_id = (data_id >> 8) | (data_id << 8);
                     auto sub = this->create_subscription<std_msgs::msg::Float32MultiArray>(
                         topic_name, 10,
                         [this, data_id, topic_name](const std_msgs::msg::Float32MultiArray::SharedPtr msg) {

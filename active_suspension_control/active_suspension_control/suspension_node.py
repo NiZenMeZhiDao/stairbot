@@ -80,7 +80,7 @@ class SuspensionController(Node):
         self.sub_r0x0201 = self.create_subscription(Float32MultiArray, 'r0x0201', self.hw_status_cb, 10)
 
         # 仅发送四轮高度的目标动作话题
-        self.pub_action = self.create_publisher(Float32MultiArray, 't0x0201_action', 10)
+        self.pub_action = self.create_publisher(Float32MultiArray, 't0x0102_action', 10)
         self.pub_state = self.create_publisher(Int32, 'current_state', 10)
         
         # 控制主循环 (100Hz)
