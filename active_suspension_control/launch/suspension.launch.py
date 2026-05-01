@@ -3,19 +3,19 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     return LaunchDescription([
-        Node(
-            package='wit_ros2_imu',
-            executable='wit_ros2_imu',
-            name='imu_driver_node',
-            output='screen',
-            parameters=[{
-                'port': '/dev/imu_usb',
-                'baudrate': 115200,
-                'protocol': 'TTL_STD',
-                'modbusID': 0x50,
-                'console_debug': False,
-            }]
-        ),
+        # Node(
+        #     package='wit_ros2_imu',
+        #     executable='wit_ros2_imu',
+        #     name='imu_driver_node',
+        #     output='screen',
+        #     parameters=[{
+        #         'port': '/dev/imu_usb',
+        #         'baudrate': 115200,
+        #         'protocol': 'TTL_STD',
+        #         'modbusID': 0x50,
+        #         'console_debug': False,
+        #     }]
+        # ),
 
         # 1. 启动主动悬挂控制节点
         Node(
