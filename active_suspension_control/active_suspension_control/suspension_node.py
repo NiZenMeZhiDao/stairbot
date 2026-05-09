@@ -4,6 +4,7 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, Int32
 from enum import Enum
 import collections
+import math
 
 # 定义系统状态机
 class State(Enum):
@@ -47,12 +48,12 @@ class SuspensionController(Node):
         self.current_direction = Direction.FORWARD
 
         # 物理层状态
-        self.distances_raw = [0.0] * 8
+        self.distances_raw = [math.nan] * 8
         self.pe_switches_raw = [0] * 4
         self.wheel_heights_current = [0.0] * 4  # [0, 1, 2, 3]
         
         # 滤波后状态
-        self.distance_filtered = [0.0] * 8
+        self.distance_filtered = [math.nan] * 8
         self.pe_switches_filtered = [0] * 4
         
         # 输出控制状态
@@ -116,8 +117,14 @@ class SuspensionController(Node):
     def dist_cb(self, msg):
         if len(msg.data) >= 8:
             for i in range(8):
-                self.distance_buffers[i].append(msg.data[i])
-                self.distance_filtered[i] = sum(self.distance_buffers[i]) / len(self.distance_buffers[i])
+                distance = float(msg.data[i])
+                self.distances_raw[i] = distance
+                if math.isfinite(distance) and distance > 0.0:
+                    self.distance_buffers[i].append(distance)
+                    self.distance_filtered[i] = sum(self.distance_buffers[i]) / len(self.distance_buffers[i])
+                else:
+                    self.distance_buffers[i].clear()
+                    self.distance_filtered[i] = math.nan
 
     def hw_status_cb(self, msg):
         # r0x0201: [PE_0, PE_1, PE_2, PE_3, H_0, H_1, H_2, H_3, ...]
@@ -271,7 +278,7 @@ class SuspensionController(Node):
         elif state == State.DOWN_1_PREPARE:
             cond_pe = self._get_v_pe(v_0) == 0
             
-            if self._is_stable(cond_pe, 'down1_pe'): 
+            if self._is_stable(cond_pe, 'down1_pe', threshold=2): 
                 if not self._height_latched:
                     dist = self._get_v_distance(0)
                     if dist > 380: 
@@ -292,7 +299,7 @@ class SuspensionController(Node):
         elif state == State.DOWN_2_FRONT_HOVER_LAND:
             cond_pe = self._get_v_pe(v_3) == 0
             
-            if self._is_stable(cond_pe, 'down2_pe'):
+            if self._is_stable(cond_pe, 'down2_pe', threshold=2):
                 self._set_v_wheel_height([v_2, v_3], self.target_height + 10.0)
                 
                 cond_height = self.check_height_reached([v_2, v_3], self.target_height)
