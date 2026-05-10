@@ -74,6 +74,7 @@ class SuspensionController(Node):
         
         # 状态机通用防抖计数器字典
         self._stable_counters = collections.defaultdict(int)
+        self._idle_debug_counter = 0
 
         # --- ROS 2 接口 ---
         self.sub_direction = self.create_subscription(Int32, 'direction', self.direction_cb, 10)
@@ -199,8 +200,11 @@ class SuspensionController(Node):
         prev_state = self.current_state
 
         if state == State.IDLE:
-            cond_up = self._get_v_distance(1) < 200
-            cond_down = self._get_v_distance(0) > 200
+            idle_v0_dist = self._get_v_distance(0)
+            idle_v1_dist = self._get_v_distance(1)
+            cond_up = idle_v1_dist < 200
+            cond_down = idle_v0_dist > 200
+            self._log_idle_debug(idle_v0_dist, idle_v1_dist, cond_up, cond_down)
             
             if self._is_stable(cond_up, 'idle_to_up'):  
                 self.current_state = State.UP_1_PREPARE
@@ -338,6 +342,24 @@ class SuspensionController(Node):
         """获取虚拟轮对应的距离传感器值"""
         phys_dist_idx = self.v_distances_idx[v_idx]
         return self.distance_filtered[phys_dist_idx]
+
+    def _log_idle_debug(self, idle_v0_dist, idle_v1_dist, cond_up, cond_down):
+        """Log status 0 trigger inputs at a low rate for field debugging."""
+        self._idle_debug_counter += 1
+        if self._idle_debug_counter % 50 != 0:
+            return
+
+        v0_phys = self.v_distances_idx[0]
+        v1_phys = self.v_distances_idx[1]
+        self.get_logger().info(
+            "status0 debug: "
+            f"direction={self.current_direction.name}, "
+            f"v0_dist={idle_v0_dist:.1f}(phys={v0_phys}, raw={self.distances_raw[v0_phys]:.1f}), "
+            f"v1_dist={idle_v1_dist:.1f}(phys={v1_phys}, raw={self.distances_raw[v1_phys]:.1f}), "
+            f"cond_up={cond_up}, cond_down={cond_down}, "
+            f"idle_to_up_count={self._stable_counters['idle_to_up']}, "
+            f"idle_to_down_count={self._stable_counters['idle_to_down']}"
+        )
 
 
 def main(args=None):
