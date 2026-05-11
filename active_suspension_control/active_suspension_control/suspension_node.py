@@ -352,13 +352,13 @@ class SuspensionController(Node):
         v0_phys = self.v_distances_idx[0]
         v1_phys = self.v_distances_idx[1]
         self.get_logger().info(
-            "status0 debug: "
-            f"direction={self.current_direction.name}, "
-            f"v0_dist={idle_v0_dist:.1f}(phys={v0_phys}, raw={self.distances_raw[v0_phys]:.1f}), "
-            f"v1_dist={idle_v1_dist:.1f}(phys={v1_phys}, raw={self.distances_raw[v1_phys]:.1f}), "
-            f"cond_up={cond_up}, cond_down={cond_down}, "
-            f"idle_to_up_count={self._stable_counters['idle_to_up']}, "
-            f"idle_to_down_count={self._stable_counters['idle_to_down']}"
+            "状态0调试: "
+            f"方向={self.current_direction.name}, "
+            f"虚拟0距离={idle_v0_dist:.1f}(物理通道={v0_phys}, 原始值={self.distances_raw[v0_phys]:.1f}), "
+            f"虚拟1距离={idle_v1_dist:.1f}(物理通道={v1_phys}, 原始值={self.distances_raw[v1_phys]:.1f}), "
+            f"上升条件={cond_up}, 下降条件={cond_down}, "
+            f"上升稳定计数={self._stable_counters['idle_to_up']}, "
+            f"下降稳定计数={self._stable_counters['idle_to_down']}"
         )
 
 
