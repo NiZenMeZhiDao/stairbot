@@ -71,6 +71,8 @@ class SuspensionController(Node):
         
         # 初始化高度锁存标志位
         self._height_latched = False
+        self._last_target_state_cmd = None
+        self._height_control_enabled = True
         
         # 状态机通用防抖计数器字典
         self._stable_counters = collections.defaultdict(int)
@@ -78,6 +80,7 @@ class SuspensionController(Node):
 
         # --- ROS 2 接口 ---
         self.sub_direction = self.create_subscription(Int32, 'direction', self.direction_cb, 10)
+        self.sub_target_state = self.create_subscription(Int32, 'targetstate', self.target_state_cb, 10)
         self.sub_sensor_dist = self.create_subscription(Float32MultiArray, 'sensor_distances', self.dist_cb, 10)
         self.sub_r0x0201 = self.create_subscription(Float32MultiArray, 'r0x0201', self.hw_status_cb, 10)
 
@@ -114,6 +117,35 @@ class SuspensionController(Node):
             self.current_direction = Direction.LEFT
         elif msg.data == 1:
             self.current_direction = Direction.RIGHT
+
+    def target_state_cb(self, msg):
+        requested_state = int(msg.data)
+
+        if requested_state == self._last_target_state_cmd:
+            return
+
+        self._last_target_state_cmd = requested_state
+
+        if requested_state == -1:
+            self._height_control_enabled = False
+            self._height_latched = False
+            self._stable_counters.clear()
+            self.current_state = State.IDLE
+            self.wheel_heights_target = [self.H_INIT] * 4
+            self.get_logger().info("targetstate=-1, suspend wheel height publishing.")
+            return
+
+        try:
+            next_state = State(requested_state)
+        except ValueError:
+            self.get_logger().warn(f"Invalid targetstate received: {requested_state}")
+            return
+
+        self._height_control_enabled = True
+        self._height_latched = False
+        self._stable_counters.clear()
+        self.current_state = next_state
+        self.get_logger().info(f"targetstate updated to {requested_state}")
 
     def dist_cb(self, msg):
         if len(msg.data) >= 8:
@@ -184,12 +216,13 @@ class SuspensionController(Node):
         
         v_0, v_1, v_2, v_3 = 0, 1, 2, 3 
 
-        self.execute_state_machine(v_0, v_1, v_2, v_3)
+        if self._height_control_enabled:
+            self.execute_state_machine(v_0, v_1, v_2, v_3)
 
-        # 仅发布4个轮子的高度
-        ros_msg = Float32MultiArray()
-        ros_msg.data = [float(h) for h in self.wheel_heights_target]
-        self.pub_action.publish(ros_msg)
+            # 仅发布4个轮子的高度
+            ros_msg = Float32MultiArray()
+            ros_msg.data = [float(h) for h in self.wheel_heights_target]
+            self.pub_action.publish(ros_msg)
         
         state_msg = Int32(data=self.current_state.value)
         self.pub_state.publish(state_msg)
